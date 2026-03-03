@@ -1,0 +1,253 @@
+// 项目根目录 build.gradle
+buildscript {
+    ext {
+        jacoco_version = '0.8.11'
+    }
+    dependencies {
+        classpath "org.jacoco:org.jacoco.core:$jacoco_version"
+    }
+}
+
+// app/module build.gradle
+plugins {
+    id 'com.android.application'
+    id 'kotlin-android'
+    id 'jacoco'
+}
+
+android {
+    compileSdk 34
+    
+    defaultConfig {
+        applicationId "com.example.app"
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+        
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+    }
+    
+    buildTypes {
+        debug {
+            // 开启代码覆盖率
+            testCoverageEnabled true
+            minifyEnabled false
+        }
+        
+        release {
+            minifyEnabled true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+    
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+    
+    kotlinOptions {
+        jvmTarget = '1.8'
+    }
+}
+
+jacoco {
+    toolVersion = "0.8.11"
+}
+
+// 单元测试覆盖率任务
+task jacocoUnitTestReport(type: JacocoReport, dependsOn: ['testDebugUnitTest']) {
+    group = "Reporting"
+    description = "Generate Jacoco coverage reports for Unit Tests"
+    
+    reports {
+        xml.required = true
+        html.required = true
+        csv.required = false
+        
+        html.outputLocation = layout.buildDirectory.dir('reports/jacoco/unitTest/html')
+        xml.outputLocation = layout.buildDirectory.file('reports/jacoco/unitTest/report.xml')
+    }
+    
+    def fileFilter = [
+        // Android 生成的类
+        '**/R.class',
+        '**/R$*.class',
+        '**/BuildConfig.*',
+        '**/Manifest*.*',
+        // 测试相关
+        '**/*Test*.*',
+        '**/test/**',
+        '**/androidTest/**',
+        // Android 框架
+        'android/**/*.*',
+        'androidx/**/*.*',
+        // Kotlin 元数据
+        '**/*$Lambda$*.*',
+        '**/*$inlined$*.*',
+        // Data Binding
+        '**/databinding/**',
+        '**/BR.*',
+        // Dagger/Hilt
+        '**/hilt_aggregated_deps/**',
+        '**/*_Factory.*',
+        '**/*_MembersInjector.*',
+        '**/*_Provide*Factory*.*',
+        // 其他第三方生成代码
+        '**/di/**',
+    ]
+    
+    def debugTree = fileTree(
+        dir: "${buildDir}/intermediates/javac/debug",
+        excludes: fileFilter
+    )
+    def kotlinDebugTree = fileTree(
+        dir: "${buildDir}/tmp/kotlin-classes/debug",
+        excludes: fileFilter
+    )
+    
+    classDirectories.setFrom(files([debugTree], [kotlinDebugTree]))
+    
+    sourceDirectories.setFrom(files([
+        "src/main/java",
+        "src/main/kotlin",
+        "src/debug/java",
+        "src/debug/kotlin"
+    ]))
+    
+    executionData.setFrom(fileTree(dir: buildDir, includes: [
+        'jacoco/testDebugUnitTest.exec',
+    ]))
+}
+
+// 仪器测试覆盖率任务
+task jacocoInstrumentationTestReport(type: JacocoReport, dependsOn: ['createDebugCoverageReport']) {
+    group = "Reporting"
+    description = "Generate Jacoco coverage reports for Instrumentation Tests"
+    
+    reports {
+        xml.required = true
+        html.required = true
+        csv.required = false
+        
+        html.outputLocation = layout.buildDirectory.dir('reports/jacoco/instrumentationTest/html')
+        xml.outputLocation = layout.buildDirectory.file('reports/jacoco/instrumentationTest/report.xml')
+    }
+    
+    def fileFilter = [
+        '**/R.class',
+        '**/R$*.class',
+        '**/BuildConfig.*',
+        '**/Manifest*.*',
+        '**/*Test*.*',
+        '**/test/**',
+        '**/androidTest/**',
+        'android/**/*.*',
+        'androidx/**/*.*',
+        '**/*$Lambda$*.*',
+        '**/*$inlined$*.*',
+        '**/databinding/**',
+        '**/BR.*',
+        '**/hilt_aggregated_deps/**',
+        '**/*_Factory.*',
+        '**/*_MembersInjector.*',
+        '**/*_Provide*Factory*.*',
+        '**/di/**',
+    ]
+    
+    def debugTree = fileTree(
+        dir: "${buildDir}/intermediates/javac/debug",
+        excludes: fileFilter
+    )
+    def kotlinDebugTree = fileTree(
+        dir: "${buildDir}/tmp/kotlin-classes/debug",
+        excludes: fileFilter
+    )
+    
+    classDirectories.setFrom(files([debugTree], [kotlinDebugTree]))
+    
+    sourceDirectories.setFrom(files([
+        "src/main/java",
+        "src/main/kotlin"
+    ]))
+    
+    executionData.setFrom(fileTree(dir: buildDir, includes: [
+        'outputs/code_coverage/debugAndroidTest/connected/**/*.ec',
+        'outputs/code_coverage/debugAndroidTest/connected/**/coverage.ec'
+    ]))
+}
+
+// 合并覆盖率报告任务
+task jacocoMergedReport(type: JacocoReport, dependsOn: [
+    'testDebugUnitTest',
+    'createDebugCoverageReport'
+]) {
+    group = "Reporting"
+    description = "Generate merged Jacoco coverage report (Unit + Instrumentation Tests)"
+    
+    reports {
+        xml.required = true
+        html.required = true
+        csv.required = false
+        
+        html.outputLocation = layout.buildDirectory.dir('reports/jacoco/merged/html')
+        xml.outputLocation = layout.buildDirectory.file('reports/jacoco/merged/report.xml')
+    }
+    
+    def fileFilter = [
+        '**/R.class',
+        '**/R$*.class',
+        '**/BuildConfig.*',
+        '**/Manifest*.*',
+        '**/*Test*.*',
+        '**/test/**',
+        '**/androidTest/**',
+        'android/**/*.*',
+        'androidx/**/*.*',
+        '**/*$Lambda$*.*',
+        '**/*$inlined$*.*',
+        '**/databinding/**',
+        '**/BR.*',
+        '**/hilt_aggregated_deps/**',
+        '**/*_Factory.*',
+        '**/*_MembersInjector.*',
+        '**/*_Provide*Factory*.*',
+        '**/di/**',
+    ]
+    
+    def debugTree = fileTree(
+        dir: "${buildDir}/intermediates/javac/debug",
+        excludes: fileFilter
+    )
+    def kotlinDebugTree = fileTree(
+        dir: "${buildDir}/tmp/kotlin-classes/debug",
+        excludes: fileFilter
+    )
+    
+    classDirectories.setFrom(files([debugTree], [kotlinDebugTree]))
+    
+    sourceDirectories.setFrom(files([
+        "src/main/java",
+        "src/main/kotlin"
+    ]))
+    
+    executionData.setFrom(fileTree(dir: buildDir, includes: [
+        'jacoco/testDebugUnitTest.exec',
+        'outputs/code_coverage/debugAndroidTest/connected/**/*.ec',
+    ]))
+}
+
+dependencies {
+    implementation 'androidx.core:core-ktx:1.12.0'
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    
+    // 覆盖率上传依赖
+    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
+    
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.jacoco:org.jacoco.core:0.8.11'
+    
+    androidTestImplementation 'androidx.test.ext:junit:1.1.5'
+    androidTestImplementation 'androidx.test.espresso:espresso-core:3.5.1'
+}
