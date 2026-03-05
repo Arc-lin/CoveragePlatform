@@ -37,7 +37,7 @@ const Upload: React.FC = () => {
       
       // 如果有预选项目，设置平台
       if (preselectedProject) {
-        const project = projectList.find((p: Project) => p.id === parseInt(preselectedProject));
+        const project = projectList.find((p: Project) => p.id === preselectedProject);
         if (project) {
           setFormData(prev => ({ ...prev, platform: project.platform }));
         }
@@ -76,7 +76,10 @@ const Upload: React.FC = () => {
       data.append('branch', formData.branch);
       data.append('platform', formData.platform);
 
-      const res = await uploadApi.uploadCoverage(data);
+      const res = await uploadApi.uploadCoverage(data, (progressEvent) => {
+        const percent = Math.round((progressEvent.loaded * 100) / (progressEvent.total || 1));
+        setUploadProgress(percent);
+      });
       
       if (res.data.success) {
         setSuccess(`上传成功！报告ID: ${res.data.data?.reportId || 'unknown'}`);
@@ -137,7 +140,7 @@ const Upload: React.FC = () => {
                   value={formData.projectId}
                   onChange={e => {
                     const projectId = e.target.value;
-                    const project = projects.find(p => p.id === parseInt(projectId));
+                    const project = projects.find(p => p.id === projectId);
                     setFormData({ 
                       ...formData, 
                       projectId,

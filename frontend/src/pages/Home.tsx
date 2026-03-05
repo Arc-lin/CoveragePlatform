@@ -1,12 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Card, Row, Col, ProgressBar, Badge, Spinner, Alert } from 'react-bootstrap';
+import { Card, Row, Col, Badge, Spinner, Alert } from 'react-bootstrap';
 import { projectApi, coverageApi } from '../services/api';
 import { Project, CoverageReport } from '../types';
 
 const Home: React.FC = () => {
   const [projects, setProjects] = useState<Project[]>([]);
-  const [latestReports, setLatestReports] = useState<Map<number, CoverageReport>>(new Map());
+  const [latestReports, setLatestReports] = useState<Map<string, CoverageReport>>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -21,19 +21,16 @@ const Home: React.FC = () => {
       const projectList = projectsRes.data.data || [];
       setProjects(projectList);
 
-      // 加载每个项目的最新覆盖率
-      const reportsMap = new Map<number, CoverageReport>();
-      for (const project of projectList) {
-        try {
-          const reportRes = await coverageApi.getLatest(project.id);
-          if (reportRes.data.data) {
-            reportsMap.set(project.id, reportRes.data.data);
-          }
-        } catch (e) {
-          // 忽略单个项目的错误
+      // 批量获取所有项目的最新覆盖率（单次请求）
+      if (projectList.length > 0) {
+        const ids = projectList.map((p: Project) => p.id);
+        const reportsRes = await coverageApi.getLatestBatch(ids);
+        const reportsMap = new Map<string, CoverageReport>();
+        for (const report of (reportsRes.data.data || [])) {
+          reportsMap.set(report.projectId, report);
         }
+        setLatestReports(reportsMap);
       }
-      setLatestReports(reportsMap);
       setError(null);
     } catch (err) {
       setError('Failed to load data');
@@ -47,12 +44,6 @@ const Home: React.FC = () => {
     return platform === 'ios' 
       ? <Badge bg="dark"><i className="fab fa-apple me-1"></i>iOS</Badge>
       : <Badge bg="success"><i className="fab fa-android me-1"></i>Android</Badge>;
-  };
-
-  const getCoverageColor = (coverage: number) => {
-    if (coverage >= 80) return 'success';
-    if (coverage >= 60) return 'warning';
-    return 'danger';
   };
 
   if (loading) {
@@ -71,7 +62,7 @@ const Home: React.FC = () => {
           <h2 className="mb-1">Dashboard</h2>
           <p className="text-muted mb-0">代码覆盖率统计概览</p>
         </div>
-        <Link to="/projects/new" className="btn btn-primary">
+        <Link to="/projects" className="btn btn-primary">
           <i className="fas fa-plus me-2"></i>新建项目
         </Link>
       </div>
@@ -126,7 +117,7 @@ const Home: React.FC = () => {
             <div className="mb-3">📁</div>
             <h5>暂无项目</h5>
             <p className="text-muted">创建第一个项目开始收集代码覆盖率数据</p>
-            <Link to="/projects/new" className="btn btn-primary">
+            <Link to="/projects" className="btn btn-primary">
               创建项目
             </Link>
           </Card.Body>
@@ -153,18 +144,6 @@ const Home: React.FC = () => {
 
                     {report ? (
                       <div>
-                        <div className="d-flex justify-content-between align-items-center mb-2">
-                          <span className="text-muted small">行覆盖率</span>
-                          <span className={`text-${getCoverageColor(report.lineCoverage)} fw-bold`}>
-                            {report.lineCoverage.toFixed(1)}%
-                          </span>
-                        </div>
-                        <ProgressBar 
-                          now={report.lineCoverage} 
-                          variant={getCoverageColor(report.lineCoverage)}
-                          className="mb-3"
-                          style={{ height: '8px' }}
-                        />
                         <div className="d-flex justify-content-between text-muted small">
                           <span>Commit: {report.commitHash.substring(0, 7)}</span>
                           <span>{new Date(report.createdAt).toLocaleDateString()}</span>

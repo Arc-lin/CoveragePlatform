@@ -12,6 +12,13 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     { path: '/upload', label: '上传报告', icon: '⬆️' },
   ];
 
+  const isNavActive = (path: string) => {
+    if (path === '/') return location.pathname === '/';
+    // /report/* 也归入"覆盖率报告"高亮
+    if (path === '/reports' && location.pathname.startsWith('/report')) return true;
+    return location.pathname.startsWith(path);
+  };
+
   return (
     <div className="d-flex flex-column min-vh-100">
       {/* Header */}
@@ -21,10 +28,10 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
             <span className="fs-4 me-2">📈</span>
             <span className="fw-bold">Code Coverage Platform</span>
           </Link>
-          <button 
-            className="navbar-toggler" 
-            type="button" 
-            data-bs-toggle="collapse" 
+          <button
+            className="navbar-toggler"
+            type="button"
+            data-bs-toggle="collapse"
             data-bs-target="#navbarNav"
           >
             <span className="navbar-toggler-icon"></span>
@@ -33,9 +40,9 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
             <ul className="navbar-nav ms-auto">
               {navItems.map(item => (
                 <li key={item.path} className="nav-item">
-                  <Link 
+                  <Link
                     className={`nav-link d-flex align-items-center ${
-                      location.pathname === item.path ? 'active' : ''
+                      isNavActive(item.path) ? 'active' : ''
                     }`}
                     to={item.path}
                   >

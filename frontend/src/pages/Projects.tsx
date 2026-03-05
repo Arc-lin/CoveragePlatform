@@ -46,7 +46,7 @@ const Projects: React.FC = () => {
     }
   };
 
-  const handleDelete = async (id: number) => {
+  const handleDelete = async (id: string) => {
     if (!window.confirm('确定要删除这个项目吗？')) return;
     try {
       await projectApi.delete(id);
@@ -175,13 +175,17 @@ const Projects: React.FC = () => {
               </Form.Select>
             </Form.Group>
             <Form.Group className="mb-3">
-              <Form.Label>仓库地址（可选）</Form.Label>
+              <Form.Label>仓库地址</Form.Label>
               <Form.Control
                 type="url"
+                required
                 value={formData.repositoryUrl}
                 onChange={e => setFormData({ ...formData, repositoryUrl: e.target.value })}
                 placeholder="https://github.com/..."
               />
+              <Form.Text className="text-muted">
+                用于获取源码展示覆盖率详情，目前仅支持 GitHub 仓库
+              </Form.Text>
             </Form.Group>
           </Modal.Body>
           <Modal.Footer>

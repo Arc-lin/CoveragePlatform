@@ -1,141 +1,158 @@
-// 简化的内存数据库实现
-// 生产环境建议替换为真正的数据库
-
+// MongoDB 数据库服务实现
+import mongoose from 'mongoose';
+import { ProjectModel, CoverageReportModel, FileCoverageModel, IProject, ICoverageReport, IFileCoverage } from './mongoModels';
 import { Project, CoverageReport, FileCoverage } from '../types';
 
-class MemoryDatabase {
-  private projects: Map<number, Project> = new Map();
-  private coverageReports: Map<number, CoverageReport> = new Map();
-  private fileCoverages: Map<number, FileCoverage[]> = new Map();
-  
-  private projectIdCounter = 1;
-  private reportIdCounter = 1;
-
+export class MongoDatabase {
   // 项目操作
-  createProject(project: Omit<Project, 'id' | 'createdAt' | 'updatedAt'>): Project {
-    const id = this.projectIdCounter++;
-    const now = new Date().toISOString();
-    const newProject: Project = {
+  async createProject(project: Omit<Project, 'id' | 'createdAt' | 'updatedAt'>): Promise<Project> {
+    const newProject = new ProjectModel({
       ...project,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    });
+    const saved = await newProject.save();
+    return this.toProject(saved);
+  }
+
+  async getAllProjects(): Promise<Project[]> {
+    const projects = await ProjectModel.find().sort({ updatedAt: -1 });
+    return projects.map(p => this.toProject(p));
+  }
+
+  async getProjectById(id: string): Promise<Project | undefined> {
+    const project = await ProjectModel.findById(id);
+    return project ? this.toProject(project) : undefined;
+  }
+
+  async getProjectsByPlatform(platform: 'ios' | 'android'): Promise<Project[]> {
+    const projects = await ProjectModel.find({ platform }).sort({ updatedAt: -1 });
+    return projects.map(p => this.toProject(p));
+  }
+
+  async updateProject(id: string, updates: Partial<Project>): Promise<Project | undefined> {
+    const project = await ProjectModel.findByIdAndUpdate(
       id,
-      createdAt: now,
-      updatedAt: now
-    };
-    this.projects.set(id, newProject);
-    return newProject;
-  }
-
-  getAllProjects(): Project[] {
-    return Array.from(this.projects.values())
-      .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-  }
-
-  getProjectById(id: number): Project | undefined {
-    return this.projects.get(id);
-  }
-
-  getProjectsByPlatform(platform: 'ios' | 'android'): Project[] {
-    return this.getAllProjects().filter(p => p.platform === platform);
-  }
-
-  updateProject(id: number, updates: Partial<Project>): Project | undefined {
-    const project = this.projects.get(id);
-    if (!project) return undefined;
-    
-    const updated = {
-      ...project,
-      ...updates,
-      id: project.id,
-      updatedAt: new Date().toISOString()
-    };
-    this.projects.set(id, updated);
-    return updated;
-  }
-
-  deleteProject(id: number): boolean {
-    // 删除关联的覆盖率报告
-    const reportsToDelete = this.getReportsByProject(id);
-    reportsToDelete.forEach(r => this.deleteReport(r.id));
-    
-    return this.projects.delete(id);
-  }
-
-  searchProjects(query: string): Project[] {
-    const lowerQuery = query.toLowerCase();
-    return this.getAllProjects().filter(p => 
-      p.name.toLowerCase().includes(lowerQuery) ||
-      (p.repositoryUrl && p.repositoryUrl.toLowerCase().includes(lowerQuery))
+      { ...updates, updatedAt: new Date() },
+      { new: true }
     );
+    return project ? this.toProject(project) : undefined;
+  }
+
+  async deleteProject(id: string): Promise<boolean> {
+    const reports = await CoverageReportModel.find({ projectId: id });
+    for (const report of reports) {
+      await this.deleteReport(report._id?.toString() || '');
+    }
+
+    const result = await ProjectModel.findByIdAndDelete(id);
+    return !!result;
+  }
+
+  async searchProjects(query: string): Promise<Project[]> {
+    const lowerQuery = query.toLowerCase();
+    const projects = await ProjectModel.find({
+      $or: [
+        { name: { $regex: lowerQuery, $options: 'i' } },
+        { repositoryUrl: { $regex: lowerQuery, $options: 'i' } }
+      ]
+    }).sort({ updatedAt: -1 });
+    return projects.map(p => this.toProject(p));
   }
 
   // 覆盖率报告操作
-  createReport(report: Omit<CoverageReport, 'id' | 'createdAt'>): CoverageReport {
-    const id = this.reportIdCounter++;
-    const newReport: CoverageReport = {
+  async createReport(report: Omit<CoverageReport, 'id' | 'createdAt'>): Promise<CoverageReport> {
+    const newReport = new CoverageReportModel({
       ...report,
-      id,
-      createdAt: new Date().toISOString()
-    };
-    this.coverageReports.set(id, newReport);
-    
-    // 初始化文件覆盖率数组
-    this.fileCoverages.set(id, []);
-    
-    // 更新项目时间
-    const project = this.projects.get(report.projectId);
-    if (project) {
-      this.updateProject(project.id, {});
-    }
-    
-    return newReport;
+      projectId: report.projectId,
+      createdAt: new Date()
+    });
+    const saved = await newReport.save();
+
+    await ProjectModel.findByIdAndUpdate(report.projectId, { updatedAt: new Date() });
+
+    return this.toCoverageReport(saved);
   }
 
-  getReportsByProject(projectId: number): CoverageReport[] {
-    return Array.from(this.coverageReports.values())
-      .filter(r => r.projectId === projectId)
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  async getReportsByProject(projectId: string): Promise<CoverageReport[]> {
+    const reports = await CoverageReportModel
+      .find({ projectId })
+      .sort({ createdAt: -1 });
+    return reports.map(r => this.toCoverageReport(r));
   }
 
-  getReportById(id: number): CoverageReport | undefined {
-    return this.coverageReports.get(id);
+  async getReportById(id: string): Promise<CoverageReport | undefined> {
+    const report = await CoverageReportModel.findById(id);
+    return report ? this.toCoverageReport(report) : undefined;
   }
 
-  getLatestReport(projectId: number): CoverageReport | undefined {
-    const reports = this.getReportsByProject(projectId);
-    return reports[0];
+  async getLatestReport(projectId: string): Promise<CoverageReport | undefined> {
+    const report = await CoverageReportModel
+      .findOne({ projectId })
+      .sort({ createdAt: -1 });
+    return report ? this.toCoverageReport(report) : undefined;
   }
 
-  getCoverageTrend(projectId: number, days: number = 30): CoverageReport[] {
+  async getLatestReportsByProjects(projectIds: string[]): Promise<CoverageReport[]> {
+    if (projectIds.length === 0) return [];
+
+    const objectIds = projectIds.map(id => new mongoose.Types.ObjectId(id));
+    const results = await CoverageReportModel.aggregate([
+      { $match: { projectId: { $in: objectIds } } },
+      { $sort: { createdAt: -1 } },
+      { $group: {
+        _id: '$projectId',
+        doc: { $first: '$$ROOT' }
+      }},
+      { $replaceRoot: { newRoot: '$doc' } }
+    ]);
+
+    return results.map((doc: any) => this.toCoverageReport(doc));
+  }
+
+  async getCoverageTrend(projectId: string, days: number = 30): Promise<CoverageReport[]> {
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - days);
-    
-    return this.getReportsByProject(projectId)
-      .filter(r => new Date(r.createdAt) >= cutoffDate)
-      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+    const reports = await CoverageReportModel.find({
+      projectId,
+      createdAt: { $gte: cutoffDate }
+    }).sort({ createdAt: 1 });
+
+    return reports.map(r => this.toCoverageReport(r));
   }
 
-  deleteReport(id: number): boolean {
-    this.fileCoverages.delete(id);
-    return this.coverageReports.delete(id);
+  async deleteReport(id: string): Promise<boolean> {
+    await FileCoverageModel.deleteMany({ reportId: id });
+
+    const result = await CoverageReportModel.findByIdAndDelete(id);
+    return !!result;
+  }
+
+  async updateReport(id: string, updates: Partial<CoverageReport>): Promise<CoverageReport | undefined> {
+    const report = await CoverageReportModel.findByIdAndUpdate(id, updates, { new: true });
+    return report ? this.toCoverageReport(report) : undefined;
   }
 
   // 文件覆盖率操作
-  addFileCoverage(fileCoverage: FileCoverage): FileCoverage {
-    const list = this.fileCoverages.get(fileCoverage.reportId) || [];
-    const withId = { ...fileCoverage, id: list.length + 1 };
-    list.push(withId);
-    this.fileCoverages.set(fileCoverage.reportId, list);
-    return withId;
+  async addFileCoverage(fileCoverage: Omit<FileCoverage, 'id'>): Promise<FileCoverage> {
+    const newFileCoverage = new FileCoverageModel({
+      ...fileCoverage,
+      reportId: fileCoverage.reportId
+    });
+    const saved = await newFileCoverage.save();
+    return this.toFileCoverage(saved);
   }
 
-  getFileCoveragesByReport(reportId: number): FileCoverage[] {
-    return this.fileCoverages.get(reportId) || [];
+  async getFileCoveragesByReport(reportId: string): Promise<FileCoverage[]> {
+    const fileCoverages = await FileCoverageModel.find({ reportId });
+    return fileCoverages.map(fc => this.toFileCoverage(fc));
   }
 
   // 覆盖率摘要
-  getCoverageSummary(projectId: number) {
-    const reports = this.getReportsByProject(projectId);
-    
+  async getCoverageSummary(projectId: string) {
+    const reports = await this.getReportsByProject(projectId);
+
     if (reports.length === 0) {
       return {
         latest: null,
@@ -163,14 +180,48 @@ class MemoryDatabase {
       totalReports: reports.length
     };
   }
+
+  // 类型转换辅助方法
+  private toProject(doc: IProject): Project {
+    return {
+      id: doc._id.toString(),
+      name: doc.name,
+      platform: doc.platform,
+      repositoryUrl: doc.repositoryUrl,
+      createdAt: doc.createdAt.toISOString(),
+      updatedAt: doc.updatedAt.toISOString()
+    };
+  }
+
+  private toCoverageReport(doc: ICoverageReport | any): CoverageReport {
+    return {
+      id: doc._id.toString(),
+      projectId: doc.projectId.toString(),
+      commitHash: doc.commitHash,
+      branch: doc.branch,
+      lineCoverage: doc.lineCoverage,
+      functionCoverage: doc.functionCoverage,
+      branchCoverage: doc.branchCoverage,
+      incrementalCoverage: doc.incrementalCoverage,
+      gitDiff: doc.gitDiff,
+      reportPath: doc.reportPath,
+      createdAt: doc.createdAt instanceof Date ? doc.createdAt.toISOString() : doc.createdAt
+    };
+  }
+
+  private toFileCoverage(doc: IFileCoverage): FileCoverage {
+    return {
+      id: doc._id.toString(),
+      reportId: doc.reportId.toString(),
+      filePath: doc.filePath,
+      lineCoverage: doc.lineCoverage,
+      totalLines: doc.totalLines,
+      coveredLines: doc.coveredLines
+    };
+  }
 }
 
 // 导出单例实例
-export const db = new MemoryDatabase();
+export const mongoDb = new MongoDatabase();
 
-// 初始化函数（兼容性保留）
-export function initDatabase(): void {
-  console.log('Memory database initialized');
-}
-
-export default db;
+export default mongoDb;

@@ -1,6 +1,6 @@
-// 项目类型
+// 项目类型 (MongoDB 使用 string 类型的 _id)
 export interface Project {
-  id: number;
+  id: string;
   name: string;
   platform: 'ios' | 'android';
   repositoryUrl?: string;
@@ -10,22 +10,23 @@ export interface Project {
 
 // 覆盖率报告类型
 export interface CoverageReport {
-  id: number;
-  projectId: number;
+  id: string;
+  projectId: string;
   commitHash: string;
   branch: string;
   lineCoverage: number;
   functionCoverage: number;
   branchCoverage: number;
   incrementalCoverage?: number;
+  gitDiff?: string;  // 存储 git diff 内容，用于增量覆盖率分析
   reportPath?: string;
   createdAt: string;
 }
 
 // 文件覆盖率类型
 export interface FileCoverage {
-  id?: number;
-  reportId: number;
+  id?: string;
+  reportId: string;
   filePath: string;
   lineCoverage: number;
   totalLines: number;
@@ -34,7 +35,7 @@ export interface FileCoverage {
 
 // 上传请求类型
 export interface UploadRequest {
-  projectId: number;
+  projectId: string;
   platform: 'ios' | 'android';
   commitHash: string;
   branch: string;
@@ -45,7 +46,7 @@ export interface UploadRequest {
 export interface UploadResponse {
   success: boolean;
   message: string;
-  reportId?: number;
+  reportId?: string;
 }
 
 // 覆盖率趋势数据

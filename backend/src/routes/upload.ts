@@ -3,9 +3,8 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { v4 as uuidv4 } from 'uuid';
-import CoverageService from '../services/coverageService';
-import ProjectService from '../services/projectService';
-import { parseAndroidCoverage, parseIOSCoverage } from '../utils/coverageParser';
+import { mongoDb } from '../models/database';
+import { parseAndroidCoverage, parseIOSCoverage, getIncrementalFiles } from '../utils/coverageParser';
 
 const router = Router();
 
@@ -62,10 +61,8 @@ router.post('/coverage', upload.single('file'), async (req: Request, res: Respon
       });
     }
 
-    const projectIdNum = parseInt(projectId);
-
     // 检查项目是否存在
-    const project = ProjectService.getProjectById(projectIdNum);
+    const project = await mongoDb.getProjectById(projectId);
     if (!project) {
       fs.unlinkSync(req.file.path);
       return res.status(404).json({
@@ -113,21 +110,22 @@ router.post('/coverage', upload.single('file'), async (req: Request, res: Respon
     fs.renameSync(filePath, permanentPath);
 
     // 创建覆盖率报告记录
-    const report = CoverageService.createReport({
-      projectId: projectIdNum,
+    const report = await mongoDb.createReport({
+      projectId: projectId,
       commitHash,
       branch,
       lineCoverage: coverageData.lineCoverage,
       functionCoverage: coverageData.functionCoverage,
       branchCoverage: coverageData.branchCoverage,
       incrementalCoverage: coverageData.incrementalCoverage,
+      gitDiff: req.body.gitDiff || undefined,  // 保存 git diff 内容
       reportPath: permanentPath
     });
 
     // 如果有文件级覆盖率数据，保存到数据库
     if (coverageData.files && coverageData.files.length > 0) {
       for (const file of coverageData.files) {
-        CoverageService.addFileCoverage({
+        await mongoDb.addFileCoverage({
           reportId: report.id,
           filePath: file.filePath,
           lineCoverage: file.lineCoverage,
@@ -137,8 +135,25 @@ router.post('/coverage', upload.single('file'), async (req: Request, res: Respon
       }
     }
 
+    // 如果有 gitDiff，计算增量覆盖率并更新报告
+    let computedIncrementalCoverage = coverageData.incrementalCoverage;
+    if (req.body.gitDiff && permanentPath) {
+      try {
+        const incrementalFiles = await getIncrementalFiles(permanentPath, req.body.gitDiff);
+        if (incrementalFiles.length > 0) {
+          computedIncrementalCoverage = parseFloat(
+            (incrementalFiles.reduce((sum, f) => sum + (f.incrementalCoverage || 0), 0) / incrementalFiles.length).toFixed(2)
+          );
+          // 更新报告的增量覆盖率
+          await mongoDb.updateReport(report.id, { incrementalCoverage: computedIncrementalCoverage });
+        }
+      } catch (e) {
+        console.error('Failed to compute incremental coverage:', e);
+      }
+    }
+
     // 更新项目的 updated_at
-    ProjectService.updateProject(projectIdNum, {});
+    await mongoDb.updateProject(projectId, {});
 
     res.status(201).json({
       success: true,
@@ -148,7 +163,7 @@ router.post('/coverage', upload.single('file'), async (req: Request, res: Respon
         lineCoverage: coverageData.lineCoverage,
         functionCoverage: coverageData.functionCoverage,
         branchCoverage: coverageData.branchCoverage,
-        incrementalCoverage: coverageData.incrementalCoverage
+        incrementalCoverage: computedIncrementalCoverage
       }
     });
 

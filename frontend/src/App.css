@@ -170,3 +170,43 @@
 .source-code .partial {
   background-color: #fff3cd;
 }
+
+.coverage-badge {
+  font-size: 1.2rem;
+  font-weight: 600;
+  padding: 0.5rem 1rem;
+  border-radius: 0.5rem;
+}
+
+.diff-added {
+  background-color: #d4edda;
+  border-left: 3px solid #28a745;
+}
+
+.diff-removed {
+  background-color: #f8d7da;
+  border-left: 3px solid #dc3545;
+}
+
+.file-list-item {
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.file-list-item:hover {
+  background-color: #f8f9fa;
+}
+
+.file-list-item.active {
+  background-color: #e3f2fd;
+  border-left: 3px solid #2196f3;
+}
+
+.code-line {
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  padding: 0.25rem 0.5rem;
+  white-space: pre-wrap;
+  word-break: break-all;
+}

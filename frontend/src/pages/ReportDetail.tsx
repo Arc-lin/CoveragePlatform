@@ -1,30 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Card, Badge, Button, Spinner, Alert, ListGroup, Row, Col, ProgressBar, Form, Tabs, Tab } from 'react-bootstrap';
+import { Card, Badge, Button, Spinner, Alert, ListGroup, Row, Col, ProgressBar, Form } from 'react-bootstrap';
 import { coverageApi, projectApi } from '../services/api';
-import { CoverageReport, Project } from '../types';
-
-interface FileInfo {
-  filePath: string;
-  lineCoverage: number;
-  totalLines: number;
-  coveredLines: number;
-  changedLines?: number[];
-  incrementalCoverage?: number;
-}
-
-interface LineCoverage {
-  lineNumber: number;
-  isCovered: boolean;
-  missedInstructions: number;
-  coveredInstructions: number;
-}
-
-interface IncrementalSummary {
-  totalFiles: number;
-  totalChangedLines: number;
-  averageIncrementalCoverage: number;
-}
+import { CoverageReport, Project, FileInfo, LineCoverageDetail, IncrementalSummary } from '../types';
 
 const ReportDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -35,36 +13,53 @@ const ReportDetail: React.FC = () => {
   const [incrementalFiles, setIncrementalFiles] = useState<FileInfo[]>([]);
   const [incrementalSummary, setIncrementalSummary] = useState<IncrementalSummary | null>(null);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
-  const [fileCoverage, setFileCoverage] = useState<LineCoverage[]>([]);
+  const [fileCoverage, setFileCoverage] = useState<LineCoverageDetail[]>([]);
+  const [sourceCode, setSourceCode] = useState<string[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [diffContent, setDiffContent] = useState('');
   const [showIncremental, setShowIncremental] = useState(false);
   const [loadingIncremental, setLoadingIncremental] = useState(false);
+  const [showFullCoverage, setShowFullCoverage] = useState(false);
 
   useEffect(() => {
     if (id) {
-      loadReport(parseInt(id));
+      loadReport(id);
     }
   }, [id]);
 
-  const loadReport = async (reportId: number) => {
+  const loadReport = async (reportId: string) => {
     try {
       setLoading(true);
 
-      // 获取报告详情
+      // 第一步：获取报告详情
       const reportRes = await coverageApi.getById(reportId);
       const reportData = reportRes.data.data;
       setReport(reportData);
 
-      // 获取项目信息
       if (reportData) {
-        const projectRes = await projectApi.getById(reportData.projectId);
+        // 第二步：并行获取项目信息和文件列表
+        const [projectRes, filesRes] = await Promise.all([
+          projectApi.getById(reportData.projectId),
+          coverageApi.getFileCoverage(reportId),
+        ]);
         setProject(projectRes.data.data);
-
-        // 获取所有文件列表
-        const filesRes = await coverageApi.getFileCoverage(reportId, '');
         setAllFiles(filesRes.data.data || []);
+
+        // 第三步（条件性）：获取增量数据
+        if (reportData.gitDiff) {
+          try {
+            const incrementalRes = await coverageApi.getIncrementalFilesAuto(reportId);
+            if (incrementalRes.data.success) {
+              setIncrementalFiles(incrementalRes.data.data || []);
+              const summaryData = incrementalRes.data.summary;
+              setIncrementalSummary(summaryData || null);
+              setShowIncremental(true);
+            }
+          } catch (err) {
+            console.log('No incremental data available:', err);
+          }
+        }
       }
 
       setError(null);
@@ -86,12 +81,12 @@ const ReportDetail: React.FC = () => {
       setLoadingIncremental(true);
       setError(null);
 
-      const res = await coverageApi.getIncrementalFiles(parseInt(id!), diffContent);
+      const res = await coverageApi.getIncrementalFiles(id!, diffContent);
       
       if (res.data.success) {
         setIncrementalFiles(res.data.data || []);
         // summary 可能在 response 的顶层
-        const summaryData = (res.data as any).summary;
+        const summaryData = res.data.summary;
         setIncrementalSummary(summaryData || null);
         setShowIncremental(true);
       } else {
@@ -108,9 +103,25 @@ const ReportDetail: React.FC = () => {
   const handleFileClick = async (filePath: string) => {
     try {
       setSelectedFile(filePath);
-      const res = await coverageApi.getFileDetail(parseInt(id!), filePath);
-      setFileCoverage(res.data.data?.lines || []);
+      setFileCoverage([]); // 清空旧数据，触发 loading 状态
+      setSourceCode(null);
+
+      // 并行获取覆盖率数据和源码
+      const coveragePromise = showIncremental && report?.gitDiff
+        ? coverageApi.getIncrementalFileDetail(id!, filePath)
+        : coverageApi.getFileDetail(id!, filePath);
+
+      const sourcePromise = coverageApi.getSourceCode(id!, filePath).catch(() => null);
+
+      const [coverageRes, sourceRes] = await Promise.all([coveragePromise, sourcePromise]);
+
+      setFileCoverage(coverageRes.data.data?.lines || []);
+
+      if (sourceRes?.data?.data?.content) {
+        setSourceCode(sourceRes.data.data.content.split('\n'));
+      }
     } catch (err) {
+      setError('Failed to load file coverage');
       console.error('Failed to load file coverage:', err);
     }
   };
@@ -124,23 +135,6 @@ const ReportDetail: React.FC = () => {
   const getCoverageBadge = (coverage: number) => {
     const color = getCoverageColor(coverage);
     return <Badge bg={color}>{coverage.toFixed(1)}%</Badge>;
-  };
-
-  // 生成模拟代码内容
-  const generateMockCode = (lineNumber: number): string => {
-    const patterns = [
-      `    fun processItem(item: Item${lineNumber}): Result {`,
-      `        return if (item.id > ${lineNumber}) {`,
-      `            Result.Success(item)`,
-      `        } else {`,
-      `            Result.Error("Invalid item")`,
-      `        }`,
-      `    }`,
-      ``,
-      `    val data${lineNumber} = loadData()`,
-      `    processItem(data${lineNumber})`,
-    ];
-    return patterns[lineNumber % patterns.length] || `    // Line ${lineNumber}`;
   };
 
   // 获取当前显示的文件列表
@@ -223,136 +217,177 @@ const ReportDetail: React.FC = () => {
               </table>
             </Col>
             <Col md={6}>
-              <h6 className="mb-3">Coverage Summary</h6>
-              
-              <div className="mb-3">
-                <div className="d-flex justify-content-between mb-1">
-                  <span>Line Coverage</span>
-                  {getCoverageBadge(report.lineCoverage)}
-                </div>
-                <ProgressBar 
-                  now={report.lineCoverage} 
-                  variant={getCoverageColor(report.lineCoverage)}
-                  style={{ height: '10px' }}
-                />
-              </div>
-
-              <div className="mb-3">
-                <div className="d-flex justify-content-between mb-1">
-                  <span>Function Coverage</span>
-                  {getCoverageBadge(report.functionCoverage)}
-                </div>
-                <ProgressBar 
-                  now={report.functionCoverage} 
-                  variant={getCoverageColor(report.functionCoverage)}
-                  style={{ height: '10px' }}
-                />
-              </div>
-
-              <div className="mb-3">
-                <div className="d-flex justify-content-between mb-1">
-                  <span>Branch Coverage</span>
-                  {getCoverageBadge(report.branchCoverage)}
-                </div>
-                <ProgressBar 
-                  now={report.branchCoverage} 
-                  variant={getCoverageColor(report.branchCoverage)}
-                  style={{ height: '10px' }}
-                />
-              </div>
-
-              {report.incrementalCoverage !== undefined && (
-                <div className="mt-3 pt-3 border-top">
-                  <div className="d-flex justify-content-between mb-1">
-                    <span>Incremental Coverage</span>
-                    {getCoverageBadge(report.incrementalCoverage)}
+              {/* 增量覆盖率优先展示 */}
+              {incrementalSummary ? (
+                <>
+                  <h6 className="mb-3">
+                    Incremental Coverage
+                    <Badge bg="info" className="ms-2" style={{ fontSize: '0.7em' }}>Δ</Badge>
+                  </h6>
+                  <div className="mb-3">
+                    <div className="d-flex justify-content-between mb-1">
+                      <span>Incremental Coverage</span>
+                      {getCoverageBadge(incrementalSummary.averageIncrementalCoverage)}
+                    </div>
+                    <ProgressBar
+                      now={incrementalSummary.averageIncrementalCoverage}
+                      variant={getCoverageColor(incrementalSummary.averageIncrementalCoverage)}
+                      style={{ height: '10px' }}
+                    />
                   </div>
-                  <ProgressBar 
-                    now={report.incrementalCoverage} 
-                    variant={getCoverageColor(report.incrementalCoverage)}
-                    style={{ height: '10px' }}
-                  />
-                </div>
+                  <Row className="mb-3">
+                    <Col xs={6}>
+                      <div className="text-center p-2 bg-light rounded">
+                        <div className="h5 mb-0 text-info">{incrementalSummary.totalFiles}</div>
+                        <small className="text-muted">Changed Files</small>
+                      </div>
+                    </Col>
+                    <Col xs={6}>
+                      <div className="text-center p-2 bg-light rounded">
+                        <div className="h5 mb-0 text-warning">{incrementalSummary.totalChangedLines}</div>
+                        <small className="text-muted">Changed Lines</small>
+                      </div>
+                    </Col>
+                  </Row>
+
+                  {/* 全量覆盖率折叠展示 */}
+                  <div className="border-top pt-2">
+                    <Button
+                      variant="link"
+                      size="sm"
+                      className="p-0 text-muted text-decoration-none"
+                      onClick={() => setShowFullCoverage(!showFullCoverage)}
+                    >
+                      {showFullCoverage ? '▼' : '▶'} Full Coverage Details
+                    </Button>
+                    {showFullCoverage && (
+                      <div className="mt-2">
+                        <div className="mb-2">
+                          <div className="d-flex justify-content-between mb-1">
+                            <small>Line Coverage</small>
+                            <small className={`text-${getCoverageColor(report.lineCoverage)}`}>{report.lineCoverage.toFixed(1)}%</small>
+                          </div>
+                          <ProgressBar now={report.lineCoverage} variant={getCoverageColor(report.lineCoverage)} style={{ height: '6px' }} />
+                        </div>
+                        <div className="mb-2">
+                          <div className="d-flex justify-content-between mb-1">
+                            <small>Function Coverage</small>
+                            <small className={`text-${getCoverageColor(report.functionCoverage)}`}>{report.functionCoverage.toFixed(1)}%</small>
+                          </div>
+                          <ProgressBar now={report.functionCoverage} variant={getCoverageColor(report.functionCoverage)} style={{ height: '6px' }} />
+                        </div>
+                        <div className="mb-2">
+                          <div className="d-flex justify-content-between mb-1">
+                            <small>Branch Coverage</small>
+                            <small className={`text-${getCoverageColor(report.branchCoverage)}`}>{report.branchCoverage.toFixed(1)}%</small>
+                          </div>
+                          <ProgressBar now={report.branchCoverage} variant={getCoverageColor(report.branchCoverage)} style={{ height: '6px' }} />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <h6 className="mb-3">Coverage Summary</h6>
+                  <div className="mb-3">
+                    <div className="d-flex justify-content-between mb-1">
+                      <span>Line Coverage</span>
+                      {getCoverageBadge(report.lineCoverage)}
+                    </div>
+                    <ProgressBar
+                      now={report.lineCoverage}
+                      variant={getCoverageColor(report.lineCoverage)}
+                      style={{ height: '10px' }}
+                    />
+                  </div>
+                  <div className="mb-3">
+                    <div className="d-flex justify-content-between mb-1">
+                      <span>Function Coverage</span>
+                      {getCoverageBadge(report.functionCoverage)}
+                    </div>
+                    <ProgressBar
+                      now={report.functionCoverage}
+                      variant={getCoverageColor(report.functionCoverage)}
+                      style={{ height: '10px' }}
+                    />
+                  </div>
+                  <div className="mb-3">
+                    <div className="d-flex justify-content-between mb-1">
+                      <span>Branch Coverage</span>
+                      {getCoverageBadge(report.branchCoverage)}
+                    </div>
+                    <ProgressBar
+                      now={report.branchCoverage}
+                      variant={getCoverageColor(report.branchCoverage)}
+                      style={{ height: '10px' }}
+                    />
+                  </div>
+                </>
               )}
             </Col>
           </Row>
         </Card.Body>
       </Card>
 
-      {/* Incremental Coverage Analysis */}
-      <Card className="border-0 shadow-sm mb-4">
-        <Card.Header className="bg-info text-white">
-          <h5 className="mb-0">📈 Incremental Coverage Analysis</h5>
-        </Card.Header>
-        <Card.Body>
-          <Form.Group className="mb-3">
-            <Form.Label>Git Diff Content (paste diff output here)</Form.Label>
-            <Form.Control
-              as="textarea"
-              rows={4}
-              placeholder="Paste git diff content here to analyze incremental coverage...&#10;Example: git diff HEAD~1 HEAD"
-              value={diffContent}
-              onChange={(e) => setDiffContent(e.target.value)}
-            />
-            <Form.Text className="text-muted">
-              Paste the output of `git diff &lt;old-commit&gt; &lt;new-commit&gt;` to see coverage for only the changed files.
-            </Form.Text>
-          </Form.Group>
-          
-          <div className="d-flex gap-2">
-            <Button 
-              variant="info" 
-              onClick={handleAnalyzeIncremental}
-              disabled={loadingIncremental || !diffContent.trim()}
-            >
-              {loadingIncremental ? (
-                <>
-                  <Spinner animation="border" size="sm" className="me-2" />
-                  Analyzing...
-                </>
-              ) : (
-                'Analyze Incremental Coverage'
-              )}
-            </Button>
-            
-            {incrementalFiles.length > 0 && (
-              <Button 
-                variant={showIncremental ? "secondary" : "outline-secondary"}
-                onClick={() => setShowIncremental(!showIncremental)}
-              >
-                {showIncremental ? 'Show All Files' : 'Show Incremental Only'}
-              </Button>
-            )}
-          </div>
+      {/* Incremental Coverage Analysis - 只在无 gitDiff 时显示手动输入 */}
+      {!report?.gitDiff && (
+        <Card className="border-0 shadow-sm mb-4">
+          <Card.Header className="bg-info text-white">
+            <h5 className="mb-0">📈 Incremental Coverage Analysis</h5>
+          </Card.Header>
+          <Card.Body>
+            <Form.Group className="mb-3">
+              <Form.Label>Git Diff Content (paste diff output here)</Form.Label>
+              <Form.Control
+                as="textarea"
+                rows={4}
+                placeholder="Paste git diff content here to analyze incremental coverage...&#10;Example: git diff HEAD~1 HEAD"
+                value={diffContent}
+                onChange={(e) => setDiffContent(e.target.value)}
+              />
+              <Form.Text className="text-muted">
+                Paste the output of `git diff &lt;old-commit&gt; &lt;new-commit&gt;` to see coverage for only the changed files.
+              </Form.Text>
+            </Form.Group>
 
-          {/* Incremental Summary */}
-          {incrementalSummary && showIncremental && (
-            <div className="mt-4 p-3 bg-light rounded">
-              <h6>Incremental Coverage Summary</h6>
-              <Row className="mt-2">
-                <Col md={4}>
-                  <div className="text-center">
-                    <div className="h4 mb-0">{incrementalSummary.totalFiles}</div>
-                    <small className="text-muted">Changed Files</small>
-                  </div>
-                </Col>
-                <Col md={4}>
-                  <div className="text-center">
-                    <div className="h4 mb-0">{incrementalSummary.totalChangedLines}</div>
-                    <small className="text-muted">Changed Lines</small>
-                  </div>
-                </Col>
-                <Col md={4}>
-                  <div className="text-center">
-                    <div className="h4 mb-0">{incrementalSummary.averageIncrementalCoverage.toFixed(1)}%</div>
-                    <small className="text-muted">Avg Incremental Coverage</small>
-                  </div>
-                </Col>
-              </Row>
+            <div className="d-flex gap-2">
+              <Button
+                variant="info"
+                onClick={handleAnalyzeIncremental}
+                disabled={loadingIncremental || !diffContent.trim()}
+              >
+                {loadingIncremental ? (
+                  <>
+                    <Spinner animation="border" size="sm" className="me-2" />
+                    Analyzing...
+                  </>
+                ) : (
+                  'Analyze Incremental Coverage'
+                )}
+              </Button>
             </div>
-          )}
-        </Card.Body>
-      </Card>
+          </Card.Body>
+        </Card>
+      )}
+
+      {/* 视图切换 */}
+      {incrementalFiles.length > 0 && (
+        <div className="d-flex gap-2 mb-3">
+          <Button
+            variant={showIncremental ? "info" : "outline-secondary"}
+            onClick={() => setShowIncremental(true)}
+          >
+            Incremental Files ({incrementalFiles.length})
+          </Button>
+          <Button
+            variant={!showIncremental ? "secondary" : "outline-secondary"}
+            onClick={() => setShowIncremental(false)}
+          >
+            All Files ({allFiles.length})
+          </Button>
+        </div>
+      )}
 
       {/* Files and Code View */}
       <Row>
@@ -361,11 +396,20 @@ const ReportDetail: React.FC = () => {
           <Card className="border-0 shadow-sm">
             <Card.Header className="bg-light d-flex justify-content-between align-items-center">
               <h6 className="mb-0">
-                {showIncremental ? '📁 Incremental Files' : '📁 All Files'} 
-                <Badge bg="secondary" className="ms-2">{currentFiles.length}</Badge>
+                {showIncremental ? (
+                  <>
+                    📁 Changed Files
+                    <Badge bg="info" className="ms-2">{currentFiles.length}</Badge>
+                  </>
+                ) : (
+                  <>
+                    📁 All Files
+                    <Badge bg="secondary" className="ms-2">{currentFiles.length}</Badge>
+                  </>
+                )}
               </h6>
               {showIncremental && (
-                <Badge bg="info">Incremental View</Badge>
+                <Badge bg="warning" text="dark">Incremental</Badge>
               )}
             </Card.Header>
             <ListGroup variant="flush" style={{ maxHeight: '600px', overflowY: 'auto' }}>
@@ -374,8 +418,8 @@ const ReportDetail: React.FC = () => {
                   {showIncremental ? (
                     <div>
                       <div className="mb-2">📝</div>
-                      <div>No incremental files found</div>
-                      <small>Paste Git diff content above to analyze</small>
+                      <div>No changed files found</div>
+                      <small>This commit may not have any changes or no coverage data for changed files</small>
                     </div>
                   ) : (
                     'No files found'
@@ -431,82 +475,134 @@ const ReportDetail: React.FC = () => {
           <Card className="border-0 shadow-sm">
             <Card.Header className="bg-light d-flex justify-content-between align-items-center">
               <h6 className="mb-0">
-                {selectedFile ? `📝 ${selectedFile.split('/').pop()}` : 'Select a file to view coverage'}
+                {selectedFile ? `${selectedFile.split('/').pop()}` : 'Select a file to view coverage'}
               </h6>
+              {!selectedFile && (
+                <small className="text-muted">Click a file to view source code with coverage</small>
+              )}
               {selectedFile && fileCoverage.length > 0 && (
                 <div className="d-flex gap-2">
-                  <Badge bg="success">✓ Covered</Badge>
-                  <Badge bg="danger">✗ Uncovered</Badge>
+                  {showIncremental ? (
+                    <>
+                      <Badge bg="success">✓ Changed & Covered</Badge>
+                      <Badge bg="danger">✗ Changed & Uncovered</Badge>
+                      <Badge bg="light" text="dark">○ Unchanged</Badge>
+                    </>
+                  ) : (
+                    <>
+                      <Badge bg="success">✓ Covered</Badge>
+                      <Badge bg="danger">✗ Uncovered</Badge>
+                    </>
+                  )}
                 </div>
               )}
             </Card.Header>
             <Card.Body className="p-0">
               {selectedFile ? (
                 fileCoverage.length > 0 ? (
-                  <div 
-                    className="code-viewer" 
-                    style={{ 
-                      maxHeight: '600px', 
+                  <div
+                    className="code-viewer"
+                    style={{
+                      maxHeight: '600px',
                       overflow: 'auto',
                       fontFamily: 'monospace',
                       fontSize: '14px',
                       lineHeight: '1.5'
                     }}
                   >
-                    {fileCoverage.map((line) => (
-                      <div
-                        key={line.lineNumber}
-                        className={`d-flex ${
-                          line.isCovered ? 'bg-success-subtle' : 'bg-danger-subtle'
-                        }`}
-                        style={{
-                          borderLeft: `4px solid ${line.isCovered ? '#198754' : '#dc3545'}`,
-                          padding: '2px 0'
-                        }}
-                      >
-                        {/* Line Number */}
-                        <div 
-                          className="text-muted text-end pe-3"
-                          style={{ 
-                            minWidth: '50px', 
-                            userSelect: 'none',
-                            backgroundColor: 'rgba(0,0,0,0.03)'
+                    {fileCoverage.map((line) => {
+                      // 确定行的样式
+                      let bgClass = '';
+                      let borderColor = '';
+                      let indicator = '';
+                      
+                      if (showIncremental && line.isChanged !== undefined) {
+                        // 增量视图：只高亮变更行
+                        if (line.isChanged) {
+                          if (line.isCovered) {
+                            bgClass = 'bg-success-subtle';
+                            borderColor = '#198754';
+                            indicator = '✓';
+                          } else {
+                            bgClass = 'bg-danger-subtle';
+                            borderColor = '#dc3545';
+                            indicator = '✗';
+                          }
+                        } else {
+                          // 非变更行：白色背景，无指示器
+                          bgClass = '';
+                          borderColor = 'transparent';
+                          indicator = '○';
+                        }
+                      } else {
+                        // 全量视图：所有行都显示覆盖率
+                        if (line.isCovered) {
+                          bgClass = 'bg-success-subtle';
+                          borderColor = '#198754';
+                          indicator = '✓';
+                        } else {
+                          bgClass = 'bg-danger-subtle';
+                          borderColor = '#dc3545';
+                          indicator = '✗';
+                        }
+                      }
+                      
+                      return (
+                        <div
+                          key={line.lineNumber}
+                          className={`d-flex ${bgClass}`}
+                          style={{
+                            borderLeft: `4px solid ${borderColor}`,
+                            padding: '2px 0'
                           }}
                         >
-                          {line.lineNumber}
-                        </div>
+                          {/* Line Number */}
+                          <div
+                            className="text-muted text-end pe-3"
+                            style={{
+                              minWidth: '50px',
+                              userSelect: 'none',
+                              backgroundColor: 'rgba(0,0,0,0.03)'
+                            }}
+                          >
+                            {line.lineNumber}
+                          </div>
+
+                          {/* Coverage Indicator */}
+                          <div
+                            className="pe-2"
+                            style={{ 
+                              minWidth: '30px', 
+                              textAlign: 'center',
+                              color: line.isChanged ? (line.isCovered ? '#198754' : '#dc3545') : '#6c757d'
+                            }}
+                          >
+                            {indicator}
+                          </div>
                         
-                        {/* Coverage Indicator */}
-                        <div 
-                          className="pe-2"
-                          style={{ minWidth: '30px', textAlign: 'center' }}
-                        >
-                          {line.isCovered ? (
-                            <span className="text-success">✓</span>
-                          ) : (
-                            <span className="text-danger">✗</span>
-                          )}
+                          {/* Code Content */}
+                          <div className="flex-grow-1 ps-2" style={{ whiteSpace: 'pre', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            {sourceCode && sourceCode[line.lineNumber - 1] !== undefined
+                              ? sourceCode[line.lineNumber - 1] || ' '
+                              : <span className="text-muted" style={{ fontStyle: 'italic' }}>{`Line ${line.lineNumber}`}</span>
+                            }
+                          </div>
+
+                          {/* Coverage Count */}
+                          <div
+                            className="text-muted pe-3"
+                            style={{ minWidth: '80px', textAlign: 'right', fontSize: '12px' }}
+                          >
+                            {line.coveredInstructions > 0 && (
+                              <span className="text-success">+{line.coveredInstructions}</span>
+                            )}
+                            {line.missedInstructions > 0 && (
+                              <span className="text-danger ms-1">-{line.missedInstructions}</span>
+                            )}
+                          </div>
                         </div>
-                        
-                        {/* Code Content */}
-                        <div className="flex-grow-1 ps-2" style={{ whiteSpace: 'pre' }}>
-                          {generateMockCode(line.lineNumber)}
-                        </div>
-                        
-                        {/* Coverage Count */}
-                        <div 
-                          className="text-muted pe-3"
-                          style={{ minWidth: '80px', textAlign: 'right', fontSize: '12px' }}
-                        >
-                          {line.coveredInstructions > 0 && (
-                            <span className="text-success">+{line.coveredInstructions}</span>
-                          )}
-                          {line.missedInstructions > 0 && (
-                            <span className="text-danger ms-1">-{line.missedInstructions}</span>
-                          )}
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 ) : (
                   <div className="text-center py-5 text-muted">

@@ -3,7 +3,6 @@ import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
 
-import { initDatabase } from './models/database';
 import projectRoutes from './routes/projects';
 import coverageRoutes from './routes/coverage';
 import uploadRoutes from './routes/upload';
@@ -25,9 +24,6 @@ if (!fs.existsSync(uploadsDir)) {
 if (!fs.existsSync(reportsDir)) {
   fs.mkdirSync(reportsDir, { recursive: true });
 }
-
-// 初始化数据库
-initDatabase();
 
 // 静态文件服务
 app.use('/reports', express.static(reportsDir));

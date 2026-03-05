@@ -1,37 +1,65 @@
 export interface Project {
-  id: number;
+  id: string;
   name: string;
   platform: 'ios' | 'android';
-  repositoryUrl: string;
+  repositoryUrl?: string;
   createdAt: string;
   updatedAt: string;
 }
 
 export interface CoverageReport {
-  id: number;
-  projectId: number;
+  id: string;
+  projectId: string;
   commitHash: string;
   branch: string;
   lineCoverage: number;
   functionCoverage: number;
   branchCoverage: number;
   incrementalCoverage?: number;
-  reportPath: string;
+  gitDiff?: string;
+  reportPath?: string;
   createdAt: string;
 }
 
 export interface FileCoverage {
-  fileName: string;
+  id?: string;
+  reportId: string;
+  filePath: string;
   lineCoverage: number;
-  lines: {
-    lineNumber: number;
-    executionCount: number;
-    isCovered: boolean;
-  }[];
+  totalLines: number;
+  coveredLines: number;
 }
 
 export interface UploadResponse {
   success: boolean;
   message: string;
-  reportId?: number;
+  reportId?: string;
+}
+
+export interface FileInfo {
+  filePath: string;
+  lineCoverage: number;
+  totalLines: number;
+  coveredLines: number;
+  changedLines?: number[];
+  incrementalCoverage?: number;
+}
+
+export interface LineCoverageDetail {
+  lineNumber: number;
+  isCovered: boolean;
+  isChanged?: boolean;
+  missedInstructions: number;
+  coveredInstructions: number;
+}
+
+export interface IncrementalSummary {
+  totalFiles: number;
+  totalChangedLines: number;
+  averageIncrementalCoverage: number;
+}
+
+export interface FileCoverageResponse {
+  filePath: string;
+  lines: LineCoverageDetail[];
 }
