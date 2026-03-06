@@ -3,6 +3,7 @@ import { mongoDb } from '../models/database';
 import { getFileLineCoverage, getReportFiles, getIncrementalFiles } from '../utils/coverageParser';
 import https from 'https';
 import http from 'http';
+import path from 'path';
 
 const router = Router();
 
@@ -475,8 +476,24 @@ router.get('/:id/source', async (req: Request, res: Response) => {
     const [, owner, repo] = match;
     const commitHash = report.commitHash;
 
+    // LCOV 中 iOS 文件路径可能是绝对路径，需转为相对路径
+    // 例如 /Users/xxx/Desktop/CodeCoverageDemo/CodeCoverageDemo/ViewController.m
+    // 需要基于 repo 名提取相对路径: CodeCoverageDemo/ViewController.m
+    let normalizedPath = filePath;
+    if (path.isAbsolute(filePath)) {
+      const parts = filePath.split('/');
+      // 查找 repo 名在路径中的位置，取其后面的部分作为相对路径
+      const repoIdx = parts.findIndex(p => p === repo);
+      if (repoIdx >= 0 && repoIdx < parts.length - 1) {
+        normalizedPath = parts.slice(repoIdx + 1).join('/');
+      } else {
+        // 兜底：取最后两段作为相对路径
+        normalizedPath = parts.slice(-2).join('/');
+      }
+    }
+
     // 尝试多个路径前缀（JaCoCo 使用包路径，需要映射到项目源码路径）
-    const pathCandidates = [filePath];
+    const pathCandidates = [normalizedPath];
     if (project.platform === 'android') {
       // Android 项目常见源码路径前缀
       const prefixes = [
@@ -486,16 +503,16 @@ router.get('/:id/source', async (req: Request, res: Response) => {
         'src/main/kotlin/',
       ];
       for (const prefix of prefixes) {
-        if (!filePath.startsWith(prefix)) {
-          pathCandidates.push(prefix + filePath);
+        if (!normalizedPath.startsWith(prefix)) {
+          pathCandidates.push(prefix + normalizedPath);
         }
       }
     } else if (project.platform === 'ios') {
       // iOS 项目可能的路径前缀
       const prefixes = ['Sources/', 'src/'];
       for (const prefix of prefixes) {
-        if (!filePath.startsWith(prefix)) {
-          pathCandidates.push(prefix + filePath);
+        if (!normalizedPath.startsWith(prefix)) {
+          pathCandidates.push(prefix + normalizedPath);
         }
       }
     }
@@ -506,6 +523,12 @@ router.get('/:id/source', async (req: Request, res: Response) => {
         const makeRequest = (reqUrl: string, redirectCount: number = 0) => {
           if (redirectCount > 5) {
             reject(new Error('Too many redirects'));
+            return;
+          }
+          try {
+            new URL(reqUrl); // 校验 URL 合法性
+          } catch {
+            reject(new Error(`Invalid URL: ${reqUrl}`));
             return;
           }
           const client = reqUrl.startsWith('https') ? https : http;
@@ -533,9 +556,9 @@ router.get('/:id/source', async (req: Request, res: Response) => {
       const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${commitHash}/${candidate}`;
       try {
         sourceCode = await fetchFromGitHub(rawUrl);
-        break; // 找到了就停止
+        break;
       } catch {
-        continue; // 尝试下一个路径
+        continue;
       }
     }
 

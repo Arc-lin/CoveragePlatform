@@ -420,14 +420,22 @@ function getFileLineCoverageLCOV(
  * 文件路径匹配辅助函数
  */
 function matchFilePath(filePath: string, targetFile: string): boolean {
-  // 提取文件名
-  const fileName = path.basename(filePath);
-  const targetFileName = path.basename(targetFile);
+  // 标准化路径分隔符
+  const normalizedFile = filePath.replace(/\\/g, '/');
+  const normalizedTarget = targetFile.replace(/\\/g, '/');
 
-  return filePath.endsWith(targetFile) ||
-    targetFile.endsWith(filePath) ||
-    targetFile.endsWith(fileName) ||
-    filePath.endsWith(targetFileName);
+  // 精确匹配
+  if (normalizedFile === normalizedTarget) return true;
+
+  // 后缀匹配：确保在路径分隔符边界上匹配，避免 StudentDetailViewController.m 匹配 ViewController.m
+  if (normalizedFile.endsWith('/' + normalizedTarget) || normalizedTarget.endsWith('/' + normalizedFile)) return true;
+
+  // 文件名完全相同且路径兼容
+  const fileName = path.basename(normalizedFile);
+  const targetFileName = path.basename(normalizedTarget);
+  if (fileName === targetFileName) return true;
+
+  return false;
 }
 
 /**
