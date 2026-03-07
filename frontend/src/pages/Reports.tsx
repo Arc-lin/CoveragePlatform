@@ -101,12 +101,20 @@ const Reports: React.FC = () => {
       <div className="d-flex justify-content-between align-items-center mb-4">
         <h2>覆盖率报告</h2>
         {selectedProject && (
-          <Link 
-            to={`/upload?project=${selectedProject.id}`} 
-            className="btn btn-primary"
-          >
-            上传新报告
-          </Link>
+          <div className="d-flex gap-2">
+            <Link
+              to={`/builds/${selectedProject.id}`}
+              className="btn btn-outline-secondary"
+            >
+              Builds
+            </Link>
+            <Link
+              to={`/upload?project=${selectedProject.id}`}
+              className="btn btn-primary"
+            >
+              上传新报告
+            </Link>
+          </div>
         )}
       </div>
 
@@ -135,7 +143,7 @@ const Reports: React.FC = () => {
           <Card.Header className="bg-white">
             <h5 className="mb-0">
               {selectedProject.name} 
-              <Badge bg={selectedProject.platform === 'ios' ? 'dark' : 'success'} className="ms-2">
+              <Badge bg={selectedProject.platform === 'ios' ? 'dark' : selectedProject.platform === 'python' ? 'info' : 'success'} className="ms-2">
                 {selectedProject.platform}
               </Badge>
             </h5>
@@ -162,6 +170,7 @@ const Reports: React.FC = () => {
                     <th>时间</th>
                     <th>Commit</th>
                     <th>分支</th>
+                    <th>来源</th>
                     <th>增量覆盖率</th>
                     <th>操作</th>
                   </tr>
@@ -177,6 +186,13 @@ const Reports: React.FC = () => {
                       </td>
                       <td onClick={() => navigate(`/report/${report.id}`)}>
                         <Badge bg="secondary">{report.branch}</Badge>
+                      </td>
+                      <td onClick={() => navigate(`/report/${report.id}`)}>
+                        {report.source === 'auto' ? (
+                          <Badge bg="info">Auto</Badge>
+                        ) : (
+                          <Badge bg="outline-secondary" className="text-secondary border">Manual</Badge>
+                        )}
                       </td>
                       <td onClick={() => navigate(`/report/${report.id}`)}>
                         {report.incrementalCoverage !== undefined ? (

@@ -4,7 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import { mongoDb } from '../models/database';
-import { parseAndroidCoverage, parseIOSCoverage, getIncrementalFiles } from '../utils/coverageParser';
+import { parseAndroidCoverage, parseIOSCoverage, parsePythonCoverage, getIncrementalFiles } from '../utils/coverageParser';
 
 const router = Router();
 
@@ -28,7 +28,7 @@ const upload = multer({
   limits: { fileSize: 100 * 1024 * 1024 }, // 100MB 限制
   fileFilter: (req, file, cb) => {
     // 允许的文件类型
-    const allowedTypes = ['.ec', '.exec', '.profraw', '.profdata', '.info', '.xml', '.zip'];
+    const allowedTypes = ['.ec', '.exec', '.profraw', '.profdata', '.info', '.xml', '.zip', '.json'];
     const ext = path.extname(file.originalname).toLowerCase();
     
     if (allowedTypes.includes(ext)) {
@@ -88,6 +88,8 @@ router.post('/coverage', upload.single('file'), async (req: Request, res: Respon
         coverageData = await parseAndroidCoverage(filePath, fileExt);
       } else if (project.platform === 'ios' || platform === 'ios') {
         coverageData = await parseIOSCoverage(filePath, fileExt);
+      } else if (project.platform === 'python' || platform === 'python') {
+        coverageData = await parsePythonCoverage(filePath, fileExt);
       } else {
         throw new Error('Unsupported platform');
       }

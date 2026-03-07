@@ -1,7 +1,7 @@
 // MongoDB 数据库服务实现
 import mongoose from 'mongoose';
-import { ProjectModel, CoverageReportModel, FileCoverageModel, IProject, ICoverageReport, IFileCoverage } from './mongoModels';
-import { Project, CoverageReport, FileCoverage } from '../types';
+import { ProjectModel, CoverageReportModel, FileCoverageModel, BuildModel, RawUploadModel, IProject, ICoverageReport, IFileCoverage, IBuild, IRawUpload } from './mongoModels';
+import { Project, CoverageReport, FileCoverage, Build, RawUpload } from '../types';
 
 export class MongoDatabase {
   // 项目操作
@@ -25,7 +25,7 @@ export class MongoDatabase {
     return project ? this.toProject(project) : undefined;
   }
 
-  async getProjectsByPlatform(platform: 'ios' | 'android'): Promise<Project[]> {
+  async getProjectsByPlatform(platform: 'ios' | 'android' | 'python'): Promise<Project[]> {
     const projects = await ProjectModel.find({ platform }).sort({ updatedAt: -1 });
     return projects.map(p => this.toProject(p));
   }
@@ -205,6 +205,8 @@ export class MongoDatabase {
       incrementalCoverage: doc.incrementalCoverage,
       gitDiff: doc.gitDiff,
       reportPath: doc.reportPath,
+      buildId: doc.buildId?.toString(),
+      source: doc.source || 'manual',
       createdAt: doc.createdAt instanceof Date ? doc.createdAt.toISOString() : doc.createdAt
     };
   }
@@ -217,6 +219,118 @@ export class MongoDatabase {
       lineCoverage: doc.lineCoverage,
       totalLines: doc.totalLines,
       coveredLines: doc.coveredLines
+    };
+  }
+
+  // Build 操作
+  async createBuild(build: Omit<Build, 'id' | 'createdAt' | 'updatedAt' | 'rawUploadCount'>): Promise<Build> {
+    const newBuild = new BuildModel({
+      ...build,
+      rawUploadCount: 0,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    });
+    const saved = await newBuild.save();
+    return this.toBuild(saved);
+  }
+
+  async getBuildById(id: string): Promise<Build | undefined> {
+    const build = await BuildModel.findById(id);
+    return build ? this.toBuild(build) : undefined;
+  }
+
+  async getBuildsByProject(projectId: string): Promise<Build[]> {
+    const builds = await BuildModel.find({ projectId }).sort({ createdAt: -1 });
+    return builds.map(b => this.toBuild(b));
+  }
+
+  async updateBuild(id: string, updates: Partial<Build>): Promise<Build | undefined> {
+    const build = await BuildModel.findByIdAndUpdate(
+      id,
+      { ...updates, updatedAt: new Date() },
+      { new: true }
+    );
+    return build ? this.toBuild(build) : undefined;
+  }
+
+  async deleteBuild(id: string): Promise<boolean> {
+    const build = await BuildModel.findById(id);
+    if (!build) return false;
+
+    // 删除关联的报告
+    if (build.mergedReportId) {
+      await this.deleteReport(build.mergedReportId.toString());
+    }
+
+    // 删除关联的原始上传记录
+    await RawUploadModel.deleteMany({ buildId: id });
+
+    const result = await BuildModel.findByIdAndDelete(id);
+    return !!result;
+  }
+
+  async incrementBuildRawCount(id: string): Promise<void> {
+    await BuildModel.findByIdAndUpdate(id, {
+      $inc: { rawUploadCount: 1 },
+      updatedAt: new Date()
+    });
+  }
+
+  // RawUpload 操作
+  async createRawUpload(rawUpload: Omit<RawUpload, 'id' | 'createdAt'>): Promise<RawUpload> {
+    const newRawUpload = new RawUploadModel({
+      ...rawUpload,
+      createdAt: new Date()
+    });
+    const saved = await newRawUpload.save();
+    return this.toRawUpload(saved);
+  }
+
+  async getRawUploadsByBuild(buildId: string): Promise<RawUpload[]> {
+    const rawUploads = await RawUploadModel.find({ buildId }).sort({ createdAt: -1 });
+    return rawUploads.map(r => this.toRawUpload(r));
+  }
+
+  async updateRawUploadStatus(id: string, status: 'uploaded' | 'merged' | 'error', errorMessage?: string): Promise<void> {
+    await RawUploadModel.findByIdAndUpdate(id, { status, errorMessage });
+  }
+
+  async deleteFileCoveragesByReport(reportId: string): Promise<void> {
+    await FileCoverageModel.deleteMany({ reportId });
+  }
+
+  private toBuild(doc: IBuild): Build {
+    return {
+      id: doc._id.toString(),
+      projectId: doc.projectId.toString(),
+      platform: doc.platform,
+      commitHash: doc.commitHash,
+      branch: doc.branch,
+      buildVersion: doc.buildVersion,
+      gitDiff: doc.gitDiff,
+      binaryPath: doc.binaryPath,
+      status: doc.status,
+      mergedReportId: doc.mergedReportId?.toString(),
+      rawUploadCount: doc.rawUploadCount,
+      lastMergedAt: doc.lastMergedAt?.toISOString(),
+      errorMessage: doc.errorMessage,
+      createdAt: doc.createdAt.toISOString(),
+      updatedAt: doc.updatedAt.toISOString()
+    };
+  }
+
+  private toRawUpload(doc: IRawUpload): RawUpload {
+    return {
+      id: doc._id.toString(),
+      buildId: doc.buildId.toString(),
+      filePath: doc.filePath,
+      originalFilename: doc.originalFilename,
+      fileSize: doc.fileSize,
+      deviceInfo: doc.deviceInfo,
+      testerName: doc.testerName,
+      status: doc.status,
+      errorMessage: doc.errorMessage,
+      createdAt: doc.createdAt.toISOString()
     };
   }
 }

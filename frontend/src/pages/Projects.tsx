@@ -11,7 +11,7 @@ const Projects: React.FC = () => {
   const [showModal, setShowModal] = useState(false);
   const [formData, setFormData] = useState({
     name: '',
-    platform: 'android' as 'ios' | 'android',
+    platform: 'android' as 'ios' | 'android' | 'python',
     repositoryUrl: ''
   });
   const navigate = useNavigate();
@@ -57,9 +57,9 @@ const Projects: React.FC = () => {
   };
 
   const getPlatformBadge = (platform: string) => {
-    return platform === 'ios' 
-      ? <Badge bg="dark">iOS</Badge>
-      : <Badge bg="success">Android</Badge>;
+    if (platform === 'ios') return <Badge bg="dark">iOS</Badge>;
+    if (platform === 'python') return <Badge bg="info">Python</Badge>;
+    return <Badge bg="success">Android</Badge>;
   };
 
   if (loading) {
@@ -168,10 +168,11 @@ const Projects: React.FC = () => {
               <Form.Label>平台</Form.Label>
               <Form.Select
                 value={formData.platform}
-                onChange={e => setFormData({ ...formData, platform: e.target.value as 'ios' | 'android' })}
+                onChange={e => setFormData({ ...formData, platform: e.target.value as 'ios' | 'android' | 'python' })}
               >
                 <option value="android">Android</option>
                 <option value="ios">iOS</option>
+                <option value="python">Python</option>
               </Form.Select>
             </Form.Group>
             <Form.Group className="mb-3">

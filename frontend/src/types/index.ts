@@ -1,7 +1,7 @@
 export interface Project {
   id: string;
   name: string;
-  platform: 'ios' | 'android';
+  platform: 'ios' | 'android' | 'python';
   repositoryUrl?: string;
   createdAt: string;
   updatedAt: string;
@@ -18,6 +18,8 @@ export interface CoverageReport {
   incrementalCoverage?: number;
   gitDiff?: string;
   reportPath?: string;
+  buildId?: string;
+  source?: 'manual' | 'auto';
   createdAt: string;
 }
 
@@ -62,4 +64,35 @@ export interface IncrementalSummary {
 export interface FileCoverageResponse {
   filePath: string;
   lines: LineCoverageDetail[];
+}
+
+export interface Build {
+  id: string;
+  projectId: string;
+  platform: 'ios' | 'android' | 'python';
+  commitHash: string;
+  branch: string;
+  buildVersion?: string;
+  gitDiff?: string;
+  binaryPath: string;
+  status: 'ready' | 'error';
+  mergedReportId?: string;
+  rawUploadCount: number;
+  lastMergedAt?: string;
+  errorMessage?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RawUpload {
+  id: string;
+  buildId: string;
+  filePath: string;
+  originalFilename: string;
+  fileSize: number;
+  deviceInfo?: string;
+  testerName?: string;
+  status: 'uploaded' | 'merged' | 'error';
+  errorMessage?: string;
+  createdAt: string;
 }

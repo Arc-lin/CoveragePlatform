@@ -11,8 +11,8 @@ router.get('/', async (req: Request, res: Response) => {
 
     if (search) {
       projects = await mongoDb.searchProjects(search as string);
-    } else if (platform && (platform === 'ios' || platform === 'android')) {
-      projects = await mongoDb.getProjectsByPlatform(platform as 'ios' | 'android');
+    } else if (platform && (platform === 'ios' || platform === 'android' || platform === 'python')) {
+      projects = await mongoDb.getProjectsByPlatform(platform as 'ios' | 'android' | 'python');
     } else {
       projects = await mongoDb.getAllProjects();
     }
@@ -39,10 +39,10 @@ router.post('/', async (req: Request, res: Response) => {
       });
     }
 
-    if (platform !== 'ios' && platform !== 'android') {
+    if (platform !== 'ios' && platform !== 'android' && platform !== 'python') {
       return res.status(400).json({
         success: false,
-        message: 'Platform must be ios or android'
+        message: 'Platform must be ios, android, or python'
       });
     }
 

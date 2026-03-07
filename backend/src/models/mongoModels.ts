@@ -3,7 +3,7 @@ import mongoose, { Schema, Document } from 'mongoose';
 // 项目文档接口
 export interface IProject extends Document {
   name: string;
-  platform: 'ios' | 'android';
+  platform: 'ios' | 'android' | 'python';
   repositoryUrl?: string;
   createdAt: Date;
   updatedAt: Date;
@@ -20,6 +20,39 @@ export interface ICoverageReport extends Document {
   incrementalCoverage?: number;
   gitDiff?: string;
   reportPath?: string;
+  buildId?: mongoose.Types.ObjectId;
+  source: 'manual' | 'auto';
+  createdAt: Date;
+}
+
+// 构建文档接口
+export interface IBuild extends Document {
+  projectId: mongoose.Types.ObjectId;
+  platform: 'ios' | 'android' | 'python';
+  commitHash: string;
+  branch: string;
+  buildVersion?: string;
+  gitDiff?: string;
+  binaryPath: string;
+  status: 'ready' | 'error';
+  mergedReportId?: mongoose.Types.ObjectId;
+  rawUploadCount: number;
+  lastMergedAt?: Date;
+  errorMessage?: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+// 原始覆盖率上传文档接口
+export interface IRawUpload extends Document {
+  buildId: mongoose.Types.ObjectId;
+  filePath: string;
+  originalFilename: string;
+  fileSize: number;
+  deviceInfo?: string;
+  testerName?: string;
+  status: 'uploaded' | 'merged' | 'error';
+  errorMessage?: string;
   createdAt: Date;
 }
 
@@ -36,7 +69,7 @@ export interface IFileCoverage extends Document {
 // 项目模型
 const ProjectSchema = new Schema<IProject>({
   name: { type: String, required: true },
-  platform: { type: String, required: true, enum: ['ios', 'android'] },
+  platform: { type: String, required: true, enum: ['ios', 'android', 'python'] },
   repositoryUrl: { type: String },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
@@ -53,6 +86,8 @@ const CoverageReportSchema = new Schema<ICoverageReport>({
   incrementalCoverage: { type: Number },
   gitDiff: { type: String },
   reportPath: { type: String },
+  buildId: { type: Schema.Types.ObjectId, ref: 'Build' },
+  source: { type: String, enum: ['manual', 'auto'], default: 'manual' },
   createdAt: { type: Date, default: Date.now }
 });
 
@@ -71,9 +106,47 @@ ProjectSchema.index({ name: 1 });
 ProjectSchema.index({ platform: 1 });
 CoverageReportSchema.index({ projectId: 1, createdAt: -1 });
 CoverageReportSchema.index({ commitHash: 1 });
+CoverageReportSchema.index({ buildId: 1 });
 FileCoverageSchema.index({ reportId: 1 });
 FileCoverageSchema.index({ filePath: 1 });
+
+// 构建模型
+const BuildSchema = new Schema<IBuild>({
+  projectId: { type: Schema.Types.ObjectId, required: true, ref: 'Project' },
+  platform: { type: String, required: true, enum: ['ios', 'android', 'python'] },
+  commitHash: { type: String, required: true },
+  branch: { type: String, required: true },
+  buildVersion: { type: String },
+  gitDiff: { type: String },
+  binaryPath: { type: String, required: true },
+  status: { type: String, required: true, enum: ['ready', 'error'], default: 'ready' },
+  mergedReportId: { type: Schema.Types.ObjectId, ref: 'CoverageReport' },
+  rawUploadCount: { type: Number, default: 0 },
+  lastMergedAt: { type: Date },
+  errorMessage: { type: String },
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now }
+});
+
+BuildSchema.index({ projectId: 1, createdAt: -1 });
+
+// 原始覆盖率上传模型
+const RawUploadSchema = new Schema<IRawUpload>({
+  buildId: { type: Schema.Types.ObjectId, required: true, ref: 'Build' },
+  filePath: { type: String, required: true },
+  originalFilename: { type: String, required: true },
+  fileSize: { type: Number, required: true },
+  deviceInfo: { type: String },
+  testerName: { type: String },
+  status: { type: String, required: true, enum: ['uploaded', 'merged', 'error'], default: 'uploaded' },
+  errorMessage: { type: String },
+  createdAt: { type: Date, default: Date.now }
+});
+
+RawUploadSchema.index({ buildId: 1, createdAt: -1 });
 
 export const ProjectModel = mongoose.model<IProject>('Project', ProjectSchema);
 export const CoverageReportModel = mongoose.model<ICoverageReport>('CoverageReport', CoverageReportSchema);
 export const FileCoverageModel = mongoose.model<IFileCoverage>('FileCoverage', FileCoverageSchema);
+export const BuildModel = mongoose.model<IBuild>('Build', BuildSchema);
+export const RawUploadModel = mongoose.model<IRawUpload>('RawUpload', RawUploadSchema);

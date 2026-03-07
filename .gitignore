@@ -15,6 +15,12 @@ backend/dist/
 uploads/
 reports/
 
+# Build artifacts (coverage data)
+backend/builds/
+
+# Tools (jacococli.jar etc.)
+backend/tools/
+
 # IDE / Editor
 .qwen/
 .claude/

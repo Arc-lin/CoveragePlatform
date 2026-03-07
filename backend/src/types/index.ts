@@ -2,7 +2,7 @@
 export interface Project {
   id: string;
   name: string;
-  platform: 'ios' | 'android';
+  platform: 'ios' | 'android' | 'python';
   repositoryUrl?: string;
   createdAt: string;
   updatedAt: string;
@@ -20,6 +20,41 @@ export interface CoverageReport {
   incrementalCoverage?: number;
   gitDiff?: string;  // 存储 git diff 内容，用于增量覆盖率分析
   reportPath?: string;
+  buildId?: string;
+  source?: 'manual' | 'auto';
+  createdAt: string;
+}
+
+// 构建类型
+export interface Build {
+  id: string;
+  projectId: string;
+  platform: 'ios' | 'android' | 'python';
+  commitHash: string;
+  branch: string;
+  buildVersion?: string;
+  gitDiff?: string;
+  binaryPath: string;
+  status: 'ready' | 'error';
+  mergedReportId?: string;
+  rawUploadCount: number;
+  lastMergedAt?: string;
+  errorMessage?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// 原始覆盖率上传类型
+export interface RawUpload {
+  id: string;
+  buildId: string;
+  filePath: string;
+  originalFilename: string;
+  fileSize: number;
+  deviceInfo?: string;
+  testerName?: string;
+  status: 'uploaded' | 'merged' | 'error';
+  errorMessage?: string;
   createdAt: string;
 }
 
@@ -36,7 +71,7 @@ export interface FileCoverage {
 // 上传请求类型
 export interface UploadRequest {
   projectId: string;
-  platform: 'ios' | 'android';
+  platform: 'ios' | 'android' | 'python';
   commitHash: string;
   branch: string;
   metadata?: Record<string, string>;

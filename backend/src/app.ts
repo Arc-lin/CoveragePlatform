@@ -6,6 +6,7 @@ import fs from 'fs';
 import projectRoutes from './routes/projects';
 import coverageRoutes from './routes/coverage';
 import uploadRoutes from './routes/upload';
+import buildRoutes from './routes/builds';
 
 const app = express();
 
@@ -17,12 +18,13 @@ app.use(express.urlencoded({ extended: true }));
 // 创建必要的目录
 const uploadsDir = path.join(__dirname, '../uploads');
 const reportsDir = path.join(__dirname, '../reports');
+const buildsDir = path.join(__dirname, '../builds');
+const toolsDir = path.join(__dirname, '../tools');
 
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
-}
-if (!fs.existsSync(reportsDir)) {
-  fs.mkdirSync(reportsDir, { recursive: true });
+for (const dir of [uploadsDir, reportsDir, buildsDir, toolsDir]) {
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
 }
 
 // 静态文件服务
@@ -32,6 +34,7 @@ app.use('/reports', express.static(reportsDir));
 app.use('/api/projects', projectRoutes);
 app.use('/api/coverage', coverageRoutes);
 app.use('/api/upload', uploadRoutes);
+app.use('/api/builds', buildRoutes);
 
 // 健康检查
 app.get('/health', (req: Request, res: Response) => {
@@ -61,6 +64,15 @@ app.get('/api', (req: Request, res: Response) => {
       },
       upload: {
         'POST /api/upload/coverage': '上传覆盖率数据'
+      },
+      builds: {
+        'POST /api/builds': '创建 Build（上传构建产物）',
+        'POST /api/builds/:buildId/raw-coverage': '上传原始覆盖率文件（SDK 自动调用）',
+        'GET /api/builds/project/:projectId': '获取项目的所有 Build',
+        'GET /api/builds/:buildId': '获取 Build 详情',
+        'GET /api/builds/:buildId/raw-uploads': '获取 Build 的所有原始上传',
+        'POST /api/builds/:buildId/remerge': '强制重新合并',
+        'DELETE /api/builds/:buildId': '删除 Build'
       }
     }
   });

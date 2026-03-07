@@ -4,33 +4,37 @@
 
 - [平台简介](#平台简介)
 - [前置准备](#前置准备)
-- [iOS 接入指南](#ios-接入指南)
-- [Android 接入指南](#android-接入指南)
-- [上传覆盖率数据到平台](#上传覆盖率数据到平台)
+- [方式一：自动化覆盖率采集（推荐，仅移动端）](#方式一自动化覆盖率采集推荐仅移动端)
+  - [iOS 自动化接入](#ios-自动化接入)
+  - [Android 自动化接入](#android-自动化接入)
+- [方式二：手动上传覆盖率报告](#方式二手动上传覆盖率报告)
+  - [iOS 手动上传](#ios-手动上传)
+  - [Android 手动上传](#android-手动上传)
+  - [Python 手动上传](#python-手动上传)
 - [增量覆盖率](#增量覆盖率)
 - [API 参考](#api-参考)
-- [CI/CD 集成示例](#cicd-集成示例)
 - [常见问题](#常见问题)
 
 ---
 
 ## 平台简介
 
-Coverage Platform 是一个代码覆盖率收集和展示平台，支持 iOS 和 Android 项目。平台可以：
+Coverage Platform 是一个代码覆盖率收集和展示平台，支持 iOS、Android 和 Python 项目。
 
-- 接收和解析覆盖率报告文件
+**平台提供两种接入方式：**
+
+| 方式 | 适用场景 | 适用平台 | 流程 |
+|------|---------|---------|------|
+| **自动化采集（推荐）** | 测试人员手工测试场景 | iOS、Android | 开发接入 SDK → 打包分发 → 测试人员使用 App → 退后台自动上传 → 平台合并报告 |
+| **手动上传** | CI/CD 自动化测试场景 | iOS、Android、Python | 运行测试 → 生成覆盖率文件 → 手动/脚本上传到平台 |
+
+**核心功能：**
+
+- 接收原始覆盖率数据（`.profraw` / `.ec` / Cobertura XML / LCOV / JSON），服务端自动解析
 - 展示行级覆盖率详情（关联 GitHub 源码）
 - 计算增量覆盖率（仅统计本次变更代码的覆盖情况）
 - 追踪覆盖率趋势
-
-**支持的覆盖率文件格式：**
-
-| 平台 | 支持格式 | 说明 |
-|------|---------|------|
-| iOS | `.info` (LCOV) | 由 `llvm-cov export -format=lcov` 生成 |
-| Android | `.xml` (JaCoCo XML) | 由 JaCoCo 插件或 `jacococli.jar` 生成 |
-
-> **注意：** `.profraw`、`.profdata`、`.ec`、`.exec` 等二进制中间文件**不能直接上传**，需先转换为上述文本格式。
+- 同一个 Build 的多次上传自动合并为一份报告（仅移动端）
 
 ---
 
@@ -50,15 +54,9 @@ curl -X POST http://<平台地址>:3001/api/projects \
   }'
 ```
 
-**参数说明：**
+> **platform 取值：** `ios`、`android` 或 `python`
 
-| 字段 | 必填 | 说明 |
-|------|------|------|
-| `name` | 是 | 项目名称 |
-| `platform` | 是 | `ios` 或 `android` |
-| `repositoryUrl` | 是 | GitHub 仓库地址（用于关联源码展示） |
-
-**返回示例：**
+返回示例：
 
 ```json
 {
@@ -72,202 +70,316 @@ curl -X POST http://<平台地址>:3001/api/projects \
 }
 ```
 
-记录返回的 `id`，后续上传时需要。
+记录返回的 `id`（即 `PROJECT_ID`），后续操作需要。
+
+### 2. 服务端要求
+
+自动化采集方式需要服务端安装以下工具：
+
+| 平台 | 工具 | 用途 |
+|------|------|------|
+| iOS | Xcode Command Line Tools | 提供 `xcrun llvm-profdata`、`xcrun llvm-cov` |
+| Android | Java Runtime | 运行 `jacococli.jar` |
+| Android | `jacococli.jar` | 放置于 `backend/tools/` 目录 |
 
 ---
 
-## iOS 接入指南
+## 方式一：自动化覆盖率采集（推荐，仅移动端）
 
-### 概述
+> **注意：** 自动化采集方式仅适用于 iOS 和 Android 移动端项目。Python 项目请使用[方式二：手动上传](#方式二手动上传覆盖率报告)。
 
-iOS 覆盖率收集基于 LLVM Source-Based Code Coverage，完整流程：
+**工作原理：**
 
 ```
-Xcode 开启 Code Coverage → 运行测试 → 生成 .profraw
-   → llvm-profdata merge → .profdata
-   → llvm-cov export → .info (LCOV)
-   → 上传到平台
+                   开发者                              测试人员
+                     │                                   │
+    ┌────────────────┼────────────────┐    ┌─────────────┼──────────────┐
+    │  1. 接入覆盖率 SDK              │    │  4. 正常使用 App            │
+    │  2. 构建 Debug 包               │    │  5. 退到后台 → SDK 自动上传  │
+    │  3. 上传构建产物 → 创建 Build   │    │     .profraw / .ec 到平台   │
+    └────────────────┼────────────────┘    └─────────────┼──────────────┘
+                     │                                   │
+                     └──────────────┬────────────────────┘
+                                    │
+                              ┌─────┴─────┐
+                              │  Coverage  │
+                              │  Platform  │
+                              ├───────────┤
+                              │ 合并所有原始文件  │
+                              │ profraw → LCOV     │
+                              │ ec → JaCoCo XML    │
+                              │ 生成覆盖率报告     │
+                              └───────────┘
 ```
 
-### Step 1: Xcode 工程配置
+### iOS 自动化接入
 
-无需修改代码或 Build Settings，只需在测试时启用 Code Coverage：
+#### Step 1: Xcode Build Settings
 
-**方式 A：Xcode 界面**
+在项目的 Build Settings 中配置覆盖率插桩（针对 Debug 配置）：
 
-1. 打开 Scheme Editor（Product → Scheme → Edit Scheme）
-2. 选择 **Test** → **Options**
-3. 勾选 **Code Coverage**
-4. 在 Code Coverage 下选择需要统计的 Target
+| Setting | Value |
+|---------|-------|
+| `OTHER_CFLAGS` | `-fprofile-instr-generate -fcoverage-mapping` |
+| `OTHER_LDFLAGS` | `-fprofile-instr-generate` |
+| `OTHER_SWIFT_FLAGS` | `-profile-generate -profile-coverage-mapping` |
 
-**方式 B：xcodebuild 命令行**
+> **注意：** 这些配置仅在 Debug 下开启，不要用于 Release。
 
-在 `xcodebuild test` 时添加 `-enableCodeCoverage YES`：
+#### Step 2: 添加 LLVM 运行时接口
+
+创建 `interface.h`，声明 LLVM Profile 运行时函数：
+
+```c
+// interface.h
+#ifndef PROFILE_INSTRPROFILING_H_
+#define PROFILE_INSTRPROFILING_H_
+
+#import <Foundation/Foundation.h>
+
+// https://clang.llvm.org/docs/SourceBasedCodeCoverage.html
+int __llvm_profile_runtime = 0;
+void __llvm_profile_initialize_file(void);
+const char *__llvm_profile_get_filename(void);
+void __llvm_profile_set_filename(const char *);
+int __llvm_profile_write_file(void);
+int __llvm_profile_register_write_file_atexit(void);
+const char *__llvm_profile_get_path_prefix(void);
+
+#endif /* PROFILE_INSTRPROFILING_H_ */
+```
+
+**Objective-C 项目：** 直接 `#import "interface.h"`
+**Swift 项目：** 在 Bridging Header 中 `#import "interface.h"`
+
+#### Step 3: 添加覆盖率 SDK
+
+创建 `CoverageSDK.swift`：
+
+```swift
+import Foundation
+
+@objc class CoverageSDK: NSObject {
+    @objc static let shared = CoverageSDK()
+
+    /// 平台地址
+    private var serverURL: String = ""
+    /// Build ID（从平台创建 Build 后获取）
+    private var buildId: String = ""
+    /// 测试人员标识（可选）
+    private var testerName: String = ""
+    /// 设备信息（可选）
+    private var deviceInfo: String = ""
+
+    /// 初始化 SDK
+    /// - Parameters:
+    ///   - serverURL: 平台地址，如 "http://192.168.1.100:3001"
+    ///   - buildId: 平台返回的 Build ID
+    ///   - moduleName: 模块名（用于 profraw 文件命名）
+    ///   - testerName: 测试人员标识（可选）
+    @objc func setup(serverURL: String, buildId: String, moduleName: String, testerName: String = "") {
+        self.serverURL = serverURL
+        self.buildId = buildId
+        self.testerName = testerName
+        self.deviceInfo = "\(UIDevice.current.name) (\(UIDevice.current.systemName) \(UIDevice.current.systemVersion))"
+
+        // 设置 profraw 输出路径
+        let name = "\(moduleName).profraw"
+        let fileManager = FileManager.default
+        do {
+            let documentDirectory = try fileManager.url(
+                for: .documentDirectory, in: .userDomainMask,
+                appropriateFor: nil, create: false
+            )
+            let filePath = documentDirectory.appendingPathComponent(name).path as NSString
+            __llvm_profile_set_filename(filePath.utf8String)
+            print("[CoverageSDK] profraw path: \(filePath)")
+        } catch {
+            print("[CoverageSDK] Error setting profraw path: \(error)")
+        }
+    }
+
+    /// 保存并上传覆盖率数据
+    /// 建议在 App 退到后台时调用
+    @objc func saveAndUpload() {
+        // 1. 将内存中的覆盖率数据 flush 到 .profraw 文件
+        __llvm_profile_write_file()
+
+        // 2. 查找并上传 profraw 文件
+        guard !serverURL.isEmpty, !buildId.isEmpty else {
+            print("[CoverageSDK] Not configured, skip upload")
+            return
+        }
+
+        let fileManager = FileManager.default
+        guard let documentDirectory = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+
+        do {
+            let files = try fileManager.contentsOfDirectory(at: documentDirectory, includingPropertiesForKeys: nil)
+            let profrawFiles = files.filter { $0.pathExtension == "profraw" }
+
+            for file in profrawFiles {
+                uploadFile(file)
+            }
+        } catch {
+            print("[CoverageSDK] Error listing files: \(error)")
+        }
+    }
+
+    private func uploadFile(_ fileURL: URL) {
+        guard let url = URL(string: "\(serverURL)/api/builds/\(buildId)/raw-coverage") else { return }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+
+        let boundary = UUID().uuidString
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+
+        var body = Data()
+        let filename = fileURL.lastPathComponent
+
+        // file field
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\n".data(using: .utf8)!)
+        body.append("Content-Type: application/octet-stream\r\n\r\n".data(using: .utf8)!)
+        if let fileData = try? Data(contentsOf: fileURL) {
+            body.append(fileData)
+        }
+        body.append("\r\n".data(using: .utf8)!)
+
+        // testerName field
+        if !testerName.isEmpty {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"testerName\"\r\n\r\n".data(using: .utf8)!)
+            body.append("\(testerName)\r\n".data(using: .utf8)!)
+        }
+
+        // deviceInfo field
+        if !deviceInfo.isEmpty {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"deviceInfo\"\r\n\r\n".data(using: .utf8)!)
+            body.append("\(deviceInfo)\r\n".data(using: .utf8)!)
+        }
+
+        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+        request.httpBody = body
+
+        let task = URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error = error {
+                print("[CoverageSDK] Upload failed: \(error)")
+                return
+            }
+            if let httpResponse = response as? HTTPURLResponse {
+                print("[CoverageSDK] Upload response: \(httpResponse.statusCode)")
+            }
+        }
+        task.resume()
+    }
+}
+```
+
+#### Step 4: 集成到 App 生命周期
+
+**SwiftUI (Scene-based)：** 在 SceneDelegate 中调用：
+
+```swift
+// SceneDelegate.swift
+func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options: UIScene.ConnectionOptions) {
+    // ... 现有代码 ...
+
+    // 初始化覆盖率 SDK
+    CoverageSDK.shared.setup(
+        serverURL: "http://your-server:3001",
+        buildId: "YOUR_BUILD_ID",    // 从平台创建 Build 后获取
+        moduleName: "MyApp",
+        testerName: "tester1"         // 可选
+    )
+}
+
+func sceneDidEnterBackground(_ scene: UIScene) {
+    // App 进入后台时自动上传覆盖率
+    CoverageSDK.shared.saveAndUpload()
+}
+```
+
+**UIKit (无 Scene)：** 在 AppDelegate 中调用：
+
+```swift
+func application(_ application: UIApplication, didFinishLaunchingWithOptions ...) -> Bool {
+    CoverageSDK.shared.setup(
+        serverURL: "http://your-server:3001",
+        buildId: "YOUR_BUILD_ID",
+        moduleName: "MyApp"
+    )
+    return true
+}
+
+func applicationDidEnterBackground(_ application: UIApplication) {
+    CoverageSDK.shared.saveAndUpload()
+}
+```
+
+#### Step 5: 构建并上传产物到平台
 
 ```bash
-xcodebuild test \
+# 1. 构建 Debug App
+xcodebuild build \
   -project MyApp.xcodeproj \
   -scheme MyApp \
-  -destination 'platform=iOS Simulator,name=iPhone 16,OS=18.4' \
-  -enableCodeCoverage YES
+  -configuration Debug \
+  -destination 'generic/platform=iOS Simulator'
+
+# 2. 找到 Mach-O 二进制
+BINARY=$(find ~/Library/Developer/Xcode/DerivedData -name "MyApp" \
+  -path "*/Debug-iphonesimulator/*.app/MyApp" -type f 2>/dev/null | head -1)
+
+# 3. 创建 Build（上传二进制到平台）
+RESPONSE=$(curl -s -X POST http://<平台地址>:3001/api/builds \
+  -F "binary=@$BINARY" \
+  -F "projectId=<PROJECT_ID>" \
+  -F "commitHash=$(git rev-parse HEAD)" \
+  -F "branch=$(git rev-parse --abbrev-ref HEAD)")
+
+echo "$RESPONSE"
+# 记录返回的 build.id，配置到 SDK 中
 ```
 
-或使用 workspace：
+返回示例：
 
-```bash
-xcodebuild test \
-  -workspace MyApp.xcworkspace \
-  -scheme MyApp \
-  -destination 'platform=iOS Simulator,name=iPhone 16,OS=18.4' \
-  -enableCodeCoverage YES
+```json
+{
+  "success": true,
+  "data": {
+    "id": "683ab1c2e4f5a6b7c8d9e0f1",
+    "projectId": "69a9aaef08b82d192c9907d3",
+    "platform": "ios",
+    "commitHash": "abc1234",
+    "branch": "develop",
+    "status": "ready",
+    "rawUploadCount": 0
+  }
+}
 ```
 
-### Step 2: 找到覆盖率原始数据
+**将返回的 `id` 配置到 SDK 的 `buildId` 参数中**，然后打包分发给测试人员。
 
-测试完成后，覆盖率数据保存在 DerivedData 中：
+#### Step 6: 测试人员使用
 
-```bash
-# profdata 位置
-DERIVED_DATA=$(xcodebuild -showBuildSettings -scheme MyApp 2>/dev/null | grep BUILD_DIR | head -1 | awk '{print $3}' | sed 's|/Build/Products||')
+测试人员正常使用 App。每次 App 退到后台时，SDK 自动：
 
-# 方法1：在 Build/ProfileData 目录下查找
-PROFDATA=$(find "$DERIVED_DATA/Build/ProfileData" -name "Coverage.profdata" -type f 2>/dev/null | head -1)
+1. 将内存中的覆盖率计数器 flush 到 `.profraw` 文件
+2. HTTP 上传 `.profraw` 到平台
+3. 平台自动合并该 Build 下的所有 `.profraw`，更新覆盖率报告
 
-# 方法2：如果方法1找不到，全局搜索 DerivedData
-PROFDATA=$(find ~/Library/Developer/Xcode/DerivedData -name "Coverage.profdata" -type f 2>/dev/null | sort -t/ -k1 | tail -1)
-
-echo "profdata: $PROFDATA"
-```
-
-同时找到编译产物（Mach-O 二进制）：
-
-```bash
-# 模拟器产物路径
-APP_BINARY=$(find "$DERIVED_DATA/Build/Products" -name "MyApp" -type f -path "*/Debug-iphonesimulator/*.app/*" 2>/dev/null | head -1)
-
-echo "binary: $APP_BINARY"
-```
-
-### Step 3: 生成 LCOV 格式覆盖率报告
-
-```bash
-# 直接从 profdata 导出 LCOV（无需再 merge，Coverage.profdata 已是合并后的）
-xcrun llvm-cov export \
-  "$APP_BINARY" \
-  -instr-profile="$PROFDATA" \
-  -format=lcov \
-  > coverage.info
-```
-
-如果你有的是 `.profraw` 文件（手动 dump 场景），需先合并：
-
-```bash
-# 合并 profraw → profdata
-xcrun llvm-profdata merge -sparse input.profraw -o merged.profdata
-
-# 再导出 LCOV
-xcrun llvm-cov export \
-  "$APP_BINARY" \
-  -instr-profile=merged.profdata \
-  -format=lcov \
-  > coverage.info
-```
-
-### Step 4: 验证生成的文件
-
-```bash
-# 检查文件是否有效（应包含 SF: 和 DA: 记录）
-head -20 coverage.info
-```
-
-输出示例：
-
-```
-SF:/Users/xxx/MyApp/MyApp/ViewController.m
-FN:18,viewDidLoad
-FNDA:1,viewDidLoad
-FN:44,gotoStudentList
-FNDA:1,gotoStudentList
-DA:19,1
-DA:20,1
-DA:21,1
-DA:22,0
-end_of_record
-```
-
-### iOS 一键脚本
-
-将以下脚本保存为 `export_coverage.sh`，放在工程根目录：
-
-```bash
-#!/bin/bash
-set -e
-
-SCHEME=${1:-"MyApp"}
-DESTINATION=${2:-"platform=iOS Simulator,name=iPhone 16,OS=18.4"}
-
-echo "=== 1. 运行测试 ==="
-xcodebuild test \
-  -project "${SCHEME}.xcodeproj" \
-  -scheme "$SCHEME" \
-  -destination "$DESTINATION" \
-  -enableCodeCoverage YES \
-  2>&1 | tail -5
-
-echo "=== 2. 查找覆盖率数据 ==="
-DERIVED_DATA=$(xcodebuild -showBuildSettings -scheme "$SCHEME" 2>/dev/null \
-  | grep BUILD_DIR | head -1 | awk '{print $3}' | sed 's|/Build/Products||')
-
-PROFDATA=$(find "$DERIVED_DATA/Build/ProfileData" -name "Coverage.profdata" 2>/dev/null | head -1)
-APP_BINARY=$(find "$DERIVED_DATA/Build/Products" -name "$SCHEME" -type f \
-  -path "*/Debug-iphonesimulator/*.app/*" 2>/dev/null | head -1)
-
-if [ -z "$PROFDATA" ] || [ -z "$APP_BINARY" ]; then
-  echo "错误：找不到覆盖率数据或二进制文件"
-  exit 1
-fi
-
-echo "profdata: $PROFDATA"
-echo "binary:   $APP_BINARY"
-
-echo "=== 3. 导出 LCOV ==="
-xcrun llvm-cov export "$APP_BINARY" \
-  -instr-profile="$PROFDATA" \
-  -format=lcov \
-  > coverage.info
-
-echo "=== 完成 ==="
-echo "覆盖率文件: $(pwd)/coverage.info"
-echo "文件大小: $(wc -c < coverage.info) bytes"
-echo "包含文件数: $(grep -c '^SF:' coverage.info)"
-```
-
-用法：
-
-```bash
-chmod +x export_coverage.sh
-./export_coverage.sh MyApp
-# 或指定设备
-./export_coverage.sh MyApp "platform=iOS Simulator,name=iPhone 15 Pro,OS=17.5"
-```
+可在平台 Web 界面的 **Builds** 页面查看 `rawUploadCount`（已上传次数）和合并后的报告。
 
 ---
 
-## Android 接入指南
+### Android 自动化接入
 
-### 概述
+#### Step 1: 配置 build.gradle
 
-Android 覆盖率基于 JaCoCo，完整流程：
-
-```
-build.gradle 配置 JaCoCo → 运行测试 → 生成 .exec/.ec
-   → jacococli.jar report → .xml (JaCoCo XML)
-   → 上传到平台
-```
-
-### Step 1: 配置 build.gradle
-
-**模块级 `app/build.gradle`（Groovy DSL）：**
+在 `app/build.gradle` 中开启 JaCoCo 插桩：
 
 ```groovy
 plugins {
@@ -278,261 +390,452 @@ plugins {
 android {
     buildTypes {
         debug {
-            testCoverageEnabled true  // 关键：开启覆盖率插桩
+            testCoverageEnabled true  // 开启覆盖率插桩
         }
     }
 }
 
-// JaCoCo 版本配置（可选，推荐 0.8.10+）
 jacoco {
     toolVersion = "0.8.12"
 }
-
-// 自定义覆盖率报告任务
-task jacocoTestReport(type: JacocoReport, dependsOn: ['testDebugUnitTest']) {
-    reports {
-        xml.required = true        // 生成 XML（平台需要此格式）
-        html.required = true       // 可选：生成 HTML 本地查看
-        csv.required = false
-    }
-
-    def fileFilter = [
-        '**/R.class', '**/R$*.class',
-        '**/BuildConfig.*', '**/Manifest*.*',
-        '**/*Test*.*', '**/AutoValue_*.*'
-    ]
-
-    def debugTree = fileTree(
-        dir: "${buildDir}/intermediates/javac/debug/classes",
-        excludes: fileFilter
-    ) + fileTree(
-        dir: "${buildDir}/tmp/kotlin-classes/debug",
-        excludes: fileFilter
-    )
-
-    sourceDirectories.setFrom(files("${project.projectDir}/src/main/java",
-                                     "${project.projectDir}/src/main/kotlin"))
-    classDirectories.setFrom(files([debugTree]))
-    executionData.setFrom(fileTree(dir: buildDir, includes: [
-        'jacoco/testDebugUnitTest.exec',
-        'outputs/unit_test_code_coverage/debugUnitTest/testDebugUnitTest.exec',
-        'outputs/code_coverage/debugAndroidTest/connected/**/*.ec'
-    ]))
-}
 ```
 
-**Kotlin DSL（`app/build.gradle.kts`）：**
+#### Step 2: 添加覆盖率 SDK
+
+创建 `CoverageSDK.kt`：
 
 ```kotlin
-plugins {
-    id("com.android.application")
-    id("jacoco")
-}
+package com.example.coverage
 
-android {
-    buildTypes {
-        getByName("debug") {
-            enableAndroidTestCoverage = true   // Instrumented Tests
-            enableUnitTestCoverage = true       // Unit Tests
+import android.content.Context
+import android.os.Build
+import java.io.DataOutputStream
+import java.io.File
+import java.io.FileInputStream
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.UUID
+
+object CoverageSDK {
+    private var serverURL: String = ""
+    private var buildId: String = ""
+    private var testerName: String = ""
+    private var deviceInfo: String = ""
+    private var context: Context? = null
+
+    /**
+     * 初始化 SDK
+     * @param context Application Context
+     * @param serverURL 平台地址，如 "http://192.168.1.100:3001"
+     * @param buildId 平台返回的 Build ID
+     * @param testerName 测试人员标识（可选）
+     */
+    fun setup(context: Context, serverURL: String, buildId: String, testerName: String = "") {
+        this.context = context.applicationContext
+        this.serverURL = serverURL
+        this.buildId = buildId
+        this.testerName = testerName
+        this.deviceInfo = "${Build.MODEL} (Android ${Build.VERSION.RELEASE})"
+    }
+
+    /**
+     * 保存并上传覆盖率数据
+     * 建议在 Application.onTrimMemory(TRIM_MEMORY_UI_HIDDEN) 或 Activity.onStop 中调用
+     */
+    fun saveAndUpload() {
+        if (serverURL.isEmpty() || buildId.isEmpty()) return
+
+        Thread {
+            try {
+                // 1. Dump .ec 文件
+                val ecFile = dumpCoverageData() ?: return@Thread
+
+                // 2. 上传到平台
+                uploadFile(ecFile)
+
+                // 3. 清理临时文件
+                ecFile.delete()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }.start()
+    }
+
+    private fun dumpCoverageData(): File? {
+        return try {
+            val ctx = context ?: return null
+            val ecFile = File(ctx.filesDir, "coverage_${System.currentTimeMillis()}.ec")
+
+            // 通过反射调用 JaCoCo Runtime Agent 的 dump 方法
+            val agent = Class.forName("org.jacoco.agent.rt.RT")
+                .getMethod("getAgent")
+                .invoke(null)
+            val bytes = agent.javaClass
+                .getMethod("getExecutionData", Boolean::class.javaPrimitiveType)
+                .invoke(agent, false) as ByteArray
+
+            ecFile.writeBytes(bytes)
+            ecFile
+        } catch (e: Exception) {
+            // JaCoCo agent 未加载（非插桩构建）
+            null
+        }
+    }
+
+    private fun uploadFile(file: File) {
+        val url = URL("$serverURL/api/builds/$buildId/raw-coverage")
+        val boundary = UUID.randomUUID().toString()
+
+        val connection = url.openConnection() as HttpURLConnection
+        connection.requestMethod = "POST"
+        connection.doOutput = true
+        connection.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+
+        DataOutputStream(connection.outputStream).use { out ->
+            // file field
+            out.writeBytes("--$boundary\r\n")
+            out.writeBytes("Content-Disposition: form-data; name=\"file\"; filename=\"${file.name}\"\r\n")
+            out.writeBytes("Content-Type: application/octet-stream\r\n\r\n")
+            FileInputStream(file).use { it.copyTo(out) }
+            out.writeBytes("\r\n")
+
+            // testerName
+            if (testerName.isNotEmpty()) {
+                out.writeBytes("--$boundary\r\n")
+                out.writeBytes("Content-Disposition: form-data; name=\"testerName\"\r\n\r\n")
+                out.writeBytes("$testerName\r\n")
+            }
+
+            // deviceInfo
+            if (deviceInfo.isNotEmpty()) {
+                out.writeBytes("--$boundary\r\n")
+                out.writeBytes("Content-Disposition: form-data; name=\"deviceInfo\"\r\n\r\n")
+                out.writeBytes("$deviceInfo\r\n")
+            }
+
+            out.writeBytes("--$boundary--\r\n")
+        }
+
+        val responseCode = connection.responseCode
+        println("[CoverageSDK] Upload response: $responseCode")
+        connection.disconnect()
+    }
+}
+```
+
+#### Step 3: 集成到 App 生命周期
+
+在 `Application` 类中初始化并触发上传：
+
+```kotlin
+class MyApplication : Application() {
+    override fun onCreate() {
+        super.onCreate()
+
+        // 初始化覆盖率 SDK
+        CoverageSDK.setup(
+            context = this,
+            serverURL = "http://your-server:3001",
+            buildId = "YOUR_BUILD_ID",   // 从平台创建 Build 后获取
+            testerName = "tester1"        // 可选
+        )
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        // App 退到后台时自动上传
+        if (level == TRIM_MEMORY_UI_HIDDEN) {
+            CoverageSDK.saveAndUpload()
         }
     }
 }
-
-jacoco {
-    toolVersion = "0.8.12"
-}
 ```
 
-### Step 2: 运行测试并生成覆盖率
+> 也可以在 Activity 的 `onStop()` 中调用 `CoverageSDK.saveAndUpload()`。
 
-**单元测试：**
+#### Step 4: 构建并上传产物到平台
 
 ```bash
-./gradlew testDebugUnitTest
+# 1. 构建 Debug APK
+./gradlew assembleDebug
+
+# 2. 打包 classfiles（编译后的 .class 文件）
+cd app/build/intermediates/javac/debug/classes
+zip -r /tmp/classfiles.zip .
+cd -
+
+# 3. 创建 Build（上传 classfiles 到平台）
+RESPONSE=$(curl -s -X POST http://<平台地址>:3001/api/builds \
+  -F "binary=@/tmp/classfiles.zip" \
+  -F "projectId=<PROJECT_ID>" \
+  -F "commitHash=$(git rev-parse HEAD)" \
+  -F "branch=$(git rev-parse --abbrev-ref HEAD)")
+
+echo "$RESPONSE"
+# 记录返回的 build.id，配置到 SDK 中
 ```
 
-执行数据输出位置：`app/build/jacoco/testDebugUnitTest.exec`
+**将返回的 `id` 配置到 SDK 的 `buildId` 参数中**，然后打包分发 APK 给测试人员。
 
-**Instrumented Tests（设备/模拟器上的集成测试）：**
+#### Step 5: 测试人员使用
 
-```bash
-./gradlew connectedDebugAndroidTest
-```
-
-执行数据输出位置：`app/build/outputs/code_coverage/debugAndroidTest/connected/**/*.ec`
-
-### Step 3: 生成 JaCoCo XML 报告
-
-**方式 A：使用 Gradle Task（推荐）**
-
-如果已按 Step 1 配置了 `jacocoTestReport`：
-
-```bash
-./gradlew jacocoTestReport
-```
-
-XML 报告输出位置：`app/build/reports/jacoco/jacocoTestReport/jacocoTestReport.xml`
-
-**方式 B：使用 jacococli.jar 手动转换**
-
-适用于只有 `.exec` / `.ec` 文件的场景：
-
-```bash
-# 下载 jacococli.jar（如果没有）
-# https://www.jacoco.org/jacoco/trunk/doc/cli.html
-
-java -jar jacococli.jar report app/build/jacoco/testDebugUnitTest.exec \
-  --classfiles app/build/intermediates/javac/debug/classes \
-  --sourcefiles app/src/main/java \
-  --xml coverage.xml
-```
-
-多个 `.exec` / `.ec` 文件可以合并：
-
-```bash
-# 先合并
-java -jar jacococli.jar merge \
-  app/build/jacoco/testDebugUnitTest.exec \
-  app/build/outputs/code_coverage/**/*.ec \
-  --destfile merged.exec
-
-# 再生成报告
-java -jar jacococli.jar report merged.exec \
-  --classfiles app/build/intermediates/javac/debug/classes \
-  --sourcefiles app/src/main/java \
-  --xml coverage.xml
-```
-
-### Step 4: 验证生成的文件
-
-```bash
-# 检查 XML 报告是否有效
-head -5 coverage.xml
-```
-
-输出示例：
-
-```xml
-<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<!DOCTYPE report PUBLIC "-//JACOCO//DTD Report 1.1//EN" "report.dtd">
-<report name="MyApp">
-  <package name="com/example/myapp">
-    <sourcefile name="MainActivity.kt">
-```
-
-### Android 一键脚本
-
-将以下脚本保存为 `export_coverage.sh`，放在工程根目录：
-
-```bash
-#!/bin/bash
-set -e
-
-echo "=== 1. 运行单元测试 ==="
-./gradlew testDebugUnitTest
-
-echo "=== 2. 生成 JaCoCo XML 报告 ==="
-./gradlew jacocoTestReport
-
-REPORT_PATH="app/build/reports/jacoco/jacocoTestReport/jacocoTestReport.xml"
-
-if [ ! -f "$REPORT_PATH" ]; then
-  echo "错误：找不到覆盖率报告 $REPORT_PATH"
-  exit 1
-fi
-
-echo "=== 完成 ==="
-echo "覆盖率文件: $(pwd)/$REPORT_PATH"
-echo "文件大小: $(wc -c < "$REPORT_PATH") bytes"
-```
+与 iOS 相同，测试人员正常使用 App，退后台时 SDK 自动上传 `.ec` 文件到平台。
 
 ---
 
-## 上传覆盖率数据到平台
+## 方式二：手动上传覆盖率报告
 
-### 基本上传（仅全量覆盖率）
+适用于 CI/CD 自动化测试场景。开发者/CI 系统生成覆盖率文件后直接上传。
+
+**支持的文件格式：**
+
+| 平台 | 格式 | 说明 |
+|------|------|------|
+| iOS | `.info` (LCOV) | 由 `llvm-cov export -format=lcov` 生成 |
+| Android | `.xml` (JaCoCo XML) | 由 JaCoCo 插件或 `jacococli.jar` 生成 |
+| Python | `.xml` (Cobertura XML) | 由 `coverage xml` 生成（最常用） |
+| Python | `.info` (LCOV) | 由 `coverage lcov` 生成 |
+| Python | `.json` (coverage.py JSON) | 由 `coverage json` 生成 |
+
+### iOS 手动上传
+
+#### 1. 运行测试
+
+```bash
+xcodebuild test \
+  -project MyApp.xcodeproj \
+  -scheme MyApp \
+  -destination 'platform=iOS Simulator,name=iPhone 16,OS=18.4' \
+  -enableCodeCoverage YES
+```
+
+#### 2. 导出 LCOV
+
+```bash
+DERIVED_DATA=$(xcodebuild -showBuildSettings -scheme MyApp 2>/dev/null \
+  | grep BUILD_DIR | head -1 | awk '{print $3}' | sed 's|/Build/Products||')
+
+PROFDATA=$(find "$DERIVED_DATA/Build/ProfileData" -name "Coverage.profdata" | head -1)
+APP_BINARY=$(find "$DERIVED_DATA/Build/Products" -name "MyApp" \
+  -path "*/Debug-iphonesimulator/*.app/*" | head -1)
+
+xcrun llvm-cov export "$APP_BINARY" \
+  -instr-profile="$PROFDATA" \
+  -format=lcov > coverage.info
+```
+
+#### 3. 上传
 
 ```bash
 curl -X POST http://<平台地址>:3001/api/upload/coverage \
   -F "file=@coverage.info" \
-  -F "projectId=<项目ID>" \
+  -F "projectId=<PROJECT_ID>" \
   -F "commitHash=$(git rev-parse HEAD)" \
   -F "branch=$(git rev-parse --abbrev-ref HEAD)"
 ```
 
-**参数说明：**
+### Android 手动上传
 
-| 字段 | 必填 | 说明 |
-|------|------|------|
-| `file` | 是 | 覆盖率文件（iOS: `.info`，Android: `.xml`） |
-| `projectId` | 是 | 平台上的项目 ID |
-| `commitHash` | 是 | 当前代码的 Git commit hash |
-| `branch` | 是 | 当前 Git 分支名 |
+#### 1. 运行测试并生成报告
 
-**返回示例：**
+```bash
+./gradlew testDebugUnitTest jacocoTestReport
+```
 
-```json
-{
-  "success": true,
-  "message": "Coverage report uploaded successfully",
-  "reportId": "69a9b0f92b8ad2a79f89209f",
-  "data": {
-    "lineCoverage": 20.57,
-    "functionCoverage": 19.23,
-    "branchCoverage": 0
-  }
-}
+#### 2. 上传
+
+```bash
+curl -X POST http://<平台地址>:3001/api/upload/coverage \
+  -F "file=@app/build/reports/jacoco/jacocoTestReport/jacocoTestReport.xml" \
+  -F "projectId=<PROJECT_ID>" \
+  -F "commitHash=$(git rev-parse HEAD)" \
+  -F "branch=$(git rev-parse --abbrev-ref HEAD)"
+```
+
+---
+
+### Python 手动上传
+
+Python 项目使用 `coverage.py` 工具生成覆盖率报告，然后上传到平台。
+
+#### 前置准备
+
+```bash
+pip install coverage pytest
+```
+
+> 如使用其他测试框架（unittest、nose2 等），`coverage run` 同样适用。
+
+#### 1. 运行测试并收集覆盖率
+
+```bash
+# 使用 pytest
+coverage run -m pytest
+
+# 或使用 unittest
+coverage run -m unittest discover
+
+# 如需指定源码目录（推荐），在 .coveragerc 中配置：
+# [run]
+# source = src/
+# branch = true
+```
+
+#### 2. 生成覆盖率报告
+
+支持三种输出格式，推荐使用 Cobertura XML：
+
+```bash
+# 方式 A: Cobertura XML（推荐，最常用）
+coverage xml -o coverage.xml
+
+# 方式 B: LCOV
+coverage lcov -o coverage.info
+
+# 方式 C: JSON
+coverage json -o coverage.json
+```
+
+#### 3. 上传
+
+```bash
+curl -X POST http://<平台地址>:3001/api/upload/coverage \
+  -F "file=@coverage.xml" \
+  -F "projectId=<PROJECT_ID>" \
+  -F "commitHash=$(git rev-parse HEAD)" \
+  -F "branch=$(git rev-parse --abbrev-ref HEAD)"
+```
+
+#### 4. 带增量覆盖率上传
+
+```bash
+# 生成 git diff
+BASE_COMMIT=$(git merge-base origin/main HEAD)
+git diff $BASE_COMMIT HEAD --unified=0 > /tmp/diff.txt
+
+# 上传时附带 diff
+curl -X POST http://<平台地址>:3001/api/upload/coverage \
+  -F "file=@coverage.xml" \
+  -F "projectId=<PROJECT_ID>" \
+  -F "commitHash=$(git rev-parse HEAD)" \
+  -F "branch=$(git rev-parse --abbrev-ref HEAD)" \
+  -F "gitDiff=</tmp/diff.txt"
+```
+
+#### 完整示例（Makefile）
+
+```makefile
+PLATFORM_URL = http://localhost:3001
+PROJECT_ID = your_project_id
+
+.PHONY: coverage upload
+
+coverage:
+	coverage run -m pytest
+	coverage xml -o coverage.xml
+	coverage report  # 终端显示摘要
+
+upload: coverage
+	@BASE=$$(git merge-base origin/main HEAD); \
+	git diff $$BASE HEAD --unified=0 > /tmp/diff.txt; \
+	curl -X POST $(PLATFORM_URL)/api/upload/coverage \
+	  -F "file=@coverage.xml" \
+	  -F "projectId=$(PROJECT_ID)" \
+	  -F "commitHash=$$(git rev-parse HEAD)" \
+	  -F "branch=$$(git rev-parse --abbrev-ref HEAD)" \
+	  -F "gitDiff=</tmp/diff.txt"
+```
+
+#### CI/CD 集成（GitHub Actions）
+
+```yaml
+name: Python Coverage
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install coverage pytest
+
+      - name: Run tests with coverage
+        run: |
+          coverage run -m pytest
+          coverage xml -o coverage.xml
+
+      - name: Generate git diff
+        run: |
+          BASE_COMMIT=$(git merge-base origin/main HEAD)
+          git diff $BASE_COMMIT HEAD --unified=0 > /tmp/diff.txt
+
+      - name: Upload to Coverage Platform
+        run: |
+          curl -X POST ${{ secrets.COVERAGE_PLATFORM_URL }}/api/upload/coverage \
+            -F "projectId=${{ secrets.PROJECT_ID }}" \
+            -F "commitHash=${{ github.sha }}" \
+            -F "branch=${{ github.ref_name }}" \
+            -F "file=@coverage.xml" \
+            -F "gitDiff=</tmp/diff.txt"
 ```
 
 ---
 
 ## 增量覆盖率
 
-增量覆盖率用于衡量**本次变更的代码**被测试覆盖的程度。只关注 git diff 中新增/修改的行是否被执行到。
+增量覆盖率衡量**本次变更的代码**被测试覆盖的程度。
 
-### 上传时携带 Git Diff
+### 自动化方式
 
-在上传覆盖率文件时，额外传入 `gitDiff` 字段：
+创建 Build 时传入 `gitDiff`：
 
 ```bash
-# 1. 生成 git diff 文件
-#    比较基准 commit（如 main 分支的最新 commit）和当前 commit
+# 生成 diff
 BASE_COMMIT=$(git merge-base origin/main HEAD)
-CURRENT_COMMIT=$(git rev-parse HEAD)
-git diff $BASE_COMMIT $CURRENT_COMMIT --unified=0 > /tmp/coverage_diff.txt
+git diff $BASE_COMMIT HEAD --unified=0 > /tmp/diff.txt
 
-# 2. 上传（使用文件引用方式传递 gitDiff，避免特殊字符问题）
+# 创建 Build 时附带 diff
+curl -X POST http://<平台地址>:3001/api/builds \
+  -F "binary=@$BINARY" \
+  -F "projectId=<PROJECT_ID>" \
+  -F "commitHash=$(git rev-parse HEAD)" \
+  -F "branch=$(git rev-parse --abbrev-ref HEAD)" \
+  -F "gitDiff=</tmp/diff.txt"
+```
+
+后续每次 SDK 上传覆盖率数据并合并时，平台会自动计算增量覆盖率。
+
+### 手动上传方式
+
+上传覆盖率文件时传入 `gitDiff`：
+
+```bash
+BASE_COMMIT=$(git merge-base origin/main HEAD)
+git diff $BASE_COMMIT HEAD --unified=0 > /tmp/diff.txt
+
 curl -X POST http://<平台地址>:3001/api/upload/coverage \
   -F "file=@coverage.info" \
-  -F "projectId=<项目ID>" \
-  -F "commitHash=$CURRENT_COMMIT" \
+  -F "projectId=<PROJECT_ID>" \
+  -F "commitHash=$(git rev-parse HEAD)" \
   -F "branch=$(git rev-parse --abbrev-ref HEAD)" \
-  -F "gitDiff=</tmp/coverage_diff.txt"
+  -F "gitDiff=</tmp/diff.txt"
 ```
 
-> **重要：** `gitDiff` 参数使用 `-F "gitDiff=</tmp/file.txt"` 语法（注意 `<` 前无 `@`），这是 curl 的文件内容引用，会将文件内容作为表单字段值发送。与 `-F "file=@xxx"` 的文件上传不同。
-
-**返回示例（含增量覆盖率）：**
-
-```json
-{
-  "success": true,
-  "reportId": "69a9b0f92b8ad2a79f89209f",
-  "data": {
-    "lineCoverage": 20.57,
-    "functionCoverage": 19.23,
-    "branchCoverage": 0,
-    "incrementalCoverage": 15.38
-  }
-}
-```
-
-### 增量覆盖率计算原理
-
-1. 解析 `gitDiff` 获取变更文件和新增行号
-2. 从覆盖率报告中查找这些文件的行级覆盖数据
-3. 统计变更行中被覆盖的行数比例
-4. 每个变更文件独立计算增量覆盖率，最终取平均值
+> **注意：** `gitDiff` 使用 `-F "gitDiff=</tmp/file.txt"` 语法（`<` 前无 `@`），这是 curl 的文件内容引用。
 
 ---
 
@@ -548,166 +851,62 @@ curl -X POST http://<平台地址>:3001/api/upload/coverage \
 | `PUT` | `/api/projects/:id` | 更新项目 |
 | `DELETE` | `/api/projects/:id` | 删除项目 |
 
-### 覆盖率上传
+### Build 管理（自动化方式）
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `POST` | `/api/upload/coverage` | 上传覆盖率报告 |
+| `POST` | `/api/builds` | 创建 Build（上传构建产物） |
+| `POST` | `/api/builds/:buildId/raw-coverage` | 上传原始覆盖率文件（SDK 调用） |
+| `GET` | `/api/builds/project/:projectId` | 获取项目的所有 Build |
+| `GET` | `/api/builds/:buildId` | 获取 Build 详情 |
+| `GET` | `/api/builds/:buildId/raw-uploads` | 获取 Build 的所有原始上传记录 |
+| `POST` | `/api/builds/:buildId/remerge` | 强制重新合并 |
+| `DELETE` | `/api/builds/:buildId` | 删除 Build |
+
+### 手动覆盖率上传
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `POST` | `/api/upload/coverage` | 上传覆盖率报告文件 |
 
 ### 覆盖率查询
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | `GET` | `/api/coverage/project/:projectId` | 获取项目的所有报告 |
-| `GET` | `/api/coverage/project/:projectId/latest` | 获取项目最新报告 |
-| `GET` | `/api/coverage/:id` | 获取单个报告详情 |
-| `GET` | `/api/coverage/:id/files` | 获取报告的文件列表 |
-| `GET` | `/api/coverage/:id/files/:filePath/lines` | 获取文件行级覆盖率 |
+| `GET` | `/api/coverage/project/:projectId/latest` | 获取最新报告 |
+| `GET` | `/api/coverage/:id` | 获取报告详情 |
+| `GET` | `/api/coverage/:id/files` | 获取文件列表 |
 | `GET` | `/api/coverage/:id/incremental` | 获取增量覆盖率详情 |
 | `GET` | `/api/coverage/:id/source?path=<filePath>` | 获取源码（从 GitHub） |
 
 ---
 
-## CI/CD 集成示例
-
-### GitHub Actions — iOS
-
-```yaml
-name: iOS Coverage
-
-on:
-  pull_request:
-    branches: [main]
-
-jobs:
-  coverage:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # 需要完整历史来生成 diff
-
-      - name: Run Tests
-        run: |
-          xcodebuild test \
-            -project MyApp.xcodeproj \
-            -scheme MyApp \
-            -destination 'platform=iOS Simulator,name=iPhone 16' \
-            -enableCodeCoverage YES
-
-      - name: Export Coverage
-        run: |
-          DERIVED_DATA=$(xcodebuild -showBuildSettings -scheme MyApp 2>/dev/null \
-            | grep BUILD_DIR | head -1 | awk '{print $3}' | sed 's|/Build/Products||')
-          PROFDATA=$(find "$DERIVED_DATA/Build/ProfileData" -name "Coverage.profdata" | head -1)
-          APP_BINARY=$(find "$DERIVED_DATA/Build/Products" -name "MyApp" -path "*/Debug-iphonesimulator/*.app/*" | head -1)
-
-          xcrun llvm-cov export "$APP_BINARY" \
-            -instr-profile="$PROFDATA" \
-            -format=lcov > coverage.info
-
-      - name: Generate Diff
-        run: |
-          git diff origin/main...HEAD --unified=0 > /tmp/coverage_diff.txt
-
-      - name: Upload to Coverage Platform
-        run: |
-          curl -X POST ${{ secrets.COVERAGE_PLATFORM_URL }}/api/upload/coverage \
-            -F "file=@coverage.info" \
-            -F "projectId=${{ secrets.PROJECT_ID }}" \
-            -F "commitHash=${{ github.event.pull_request.head.sha }}" \
-            -F "branch=${{ github.head_ref }}" \
-            -F "gitDiff=</tmp/coverage_diff.txt"
-```
-
-### GitHub Actions — Android
-
-```yaml
-name: Android Coverage
-
-on:
-  pull_request:
-    branches: [main]
-
-jobs:
-  coverage:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up JDK
-        uses: actions/setup-java@v4
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-
-      - name: Run Tests & Generate Report
-        run: |
-          ./gradlew testDebugUnitTest jacocoTestReport
-
-      - name: Generate Diff
-        run: |
-          git diff origin/main...HEAD --unified=0 > /tmp/coverage_diff.txt
-
-      - name: Upload to Coverage Platform
-        run: |
-          curl -X POST ${{ secrets.COVERAGE_PLATFORM_URL }}/api/upload/coverage \
-            -F "file=@app/build/reports/jacoco/jacocoTestReport/jacocoTestReport.xml" \
-            -F "projectId=${{ secrets.PROJECT_ID }}" \
-            -F "commitHash=${{ github.event.pull_request.head.sha }}" \
-            -F "branch=${{ github.head_ref }}" \
-            -F "gitDiff=</tmp/coverage_diff.txt"
-```
-
-### Fastlane 集成（iOS）
-
-```ruby
-# Fastfile
-lane :coverage do
-  scan(
-    scheme: "MyApp",
-    code_coverage: true,
-    output_types: "",
-    fail_build: false
-  )
-
-  # 导出 LCOV 和上传的逻辑通过 sh 调用
-  sh("cd .. && ./export_coverage.sh MyApp && ./upload_coverage.sh")
-end
-```
-
----
-
 ## 常见问题
 
-### Q: 上传 .profraw / .profdata 报错？
+### Q: 服务端显示 "iOS coverage conversion tools not available"？
 
-平台不支持直接解析二进制格式。请先转换为 LCOV：
-
-```bash
-# profraw → profdata
-xcrun llvm-profdata merge -sparse input.profraw -o output.profdata
-
-# profdata → LCOV
-xcrun llvm-cov export <binary> -instr-profile=output.profdata -format=lcov > coverage.info
-```
-
-### Q: 上传 .exec / .ec 报错？
-
-平台不支持直接解析 JaCoCo 二进制格式。请先转换为 XML：
+安装 Xcode Command Line Tools：
 
 ```bash
-java -jar jacococli.jar report input.exec \
-  --classfiles app/build/intermediates/javac/debug/classes \
-  --xml coverage.xml
+xcode-select --install
 ```
+
+### Q: 服务端显示 "Android coverage conversion tools not available"？
+
+1. 安装 Java Runtime：`brew install openjdk`
+2. 下载 `jacococli.jar` 放到 `backend/tools/` 目录：
+   - 下载地址：https://www.jacoco.org/jacoco/
+
+### Q: profraw 上传成功但合并失败？
+
+常见原因：
+1. **Binary 不匹配**：上传的 Mach-O 二进制和 profraw 不是同一次编译的产物
+2. **工具版本不兼容**：服务端的 LLVM 工具版本和编译时不同
 
 ### Q: 增量覆盖率显示为 "-"？
 
-可能原因：
-1. 上传时没有传 `gitDiff` 参数
+1. 创建 Build 或上传报告时没有传 `gitDiff` 参数
 2. `gitDiff` 内容为空（没有代码变更）
 3. 变更的文件不在覆盖率报告中（如只改了配置文件、资源文件）
 
@@ -716,10 +915,6 @@ java -jar jacococli.jar report input.exec \
 1. 确认项目的 `repositoryUrl` 配置正确
 2. 确认代码已 push 到 GitHub 远程仓库
 3. 确认 `commitHash` 对应的 commit 存在于远程仓库
-
-### Q: 覆盖率报告中的文件路径是绝对路径怎么办？
-
-iOS LCOV 报告中的文件路径通常是编译机器上的绝对路径（如 `/Users/xxx/MyApp/...`），这是正常的。平台会自动将绝对路径转换为 GitHub 相对路径来获取源码。
 
 ### Q: 如何只统计业务代码，排除第三方库？
 
@@ -745,6 +940,44 @@ def fileFilter = [
 ]
 ```
 
-### Q: git diff 的 --unified=0 是什么意思？
+### Q: 同一个 Build 可以持续上传多次吗？
 
-`--unified=0` 表示上下文行数为 0，diff 输出只包含实际变更的行，不包含变更行周围的上下文。这是平台解析增量覆盖率所需的格式，确保只统计真正变更的行号。
+是的，这是自动化采集方式的核心特性。每次 SDK 上传新的 `.profraw` / `.ec` 文件后，平台会重新合并该 Build 下的所有原始文件，更新覆盖率报告。`rawUploadCount` 字段反映了已上传的次数。
+
+### Q: git diff 的 `--unified=0` 是什么意思？
+
+`--unified=0` 表示 diff 输出不包含变更行周围的上下文行，仅包含实际变更的行。这是平台解析增量覆盖率所需的格式。
+
+### Q: Python 项目支持哪些覆盖率格式？
+
+平台支持 coverage.py 的三种输出格式：
+
+| 格式 | 生成命令 | 文件扩展名 | 推荐度 |
+|------|---------|-----------|--------|
+| Cobertura XML | `coverage xml` | `.xml` | 推荐（信息最全） |
+| LCOV | `coverage lcov` | `.info` | 可用 |
+| JSON | `coverage json` | `.json` | 可用 |
+
+> 不支持直接上传 `.coverage` 二进制文件，请先转换为上述格式之一。
+
+### Q: Python 覆盖率只统计了部分文件？
+
+在 `.coveragerc` 或 `pyproject.toml` 中配置 `source` 参数，确保覆盖率收集范围正确：
+
+```ini
+# .coveragerc
+[run]
+source = src/
+branch = true
+```
+
+```toml
+# pyproject.toml
+[tool.coverage.run]
+source = ["src"]
+branch = true
+```
+
+### Q: Python 项目的增量覆盖率不准确？
+
+确保 Cobertura XML 中的文件路径与 git diff 中的路径能正确匹配。如果 `.coveragerc` 中配置了 `source = src/`，则 XML 中文件名可能只是 `calculator.py`（不含 `src/` 前缀），而 diff 中是 `src/calculator.py`。平台会自动进行模糊匹配，但如果项目结构复杂，建议保持一致的路径风格。

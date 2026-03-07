@@ -1,10 +1,10 @@
 # Code Coverage Platform
 
-一个支持 iOS 和 Android 双端的代码覆盖率统计平台，提供增量覆盖率分析、可视化报告展示和历史趋势追踪。
+一个支持 iOS、Android 和 Python 的代码覆盖率统计平台，提供增量覆盖率分析、可视化报告展示和历史趋势追踪。
 
 ## 📋 功能特性
 
-- **双端支持**: 同时支持 iOS (LLVM Sanitizer Coverage) 和 Android (JaCoCo)
+- **多平台支持**: 同时支持 iOS (LLVM Sanitizer Coverage)、Android (JaCoCo) 和 Python (coverage.py)
 - **增量覆盖率**: 基于 Git Diff 的增量代码覆盖率统计
 - **可视化报告**: 美观的 HTML 报告，支持行级覆盖率展示
 - **历史趋势**: 覆盖率变化趋势图表
@@ -64,7 +64,7 @@ npm start
 
 前端应用将在 `http://localhost:3000` 启动
 
-### 3. 集成到移动应用
+### 3. 集成到项目
 
 #### Android
 
@@ -82,6 +82,28 @@ CoverageCollector.init(this)
 ```objc
 // AppDelegate.m
 [CoverageCollector initializeCollector];
+```
+
+#### Python
+
+Python 项目使用手动上传方式，无需 SDK 集成：
+
+```bash
+# 1. 安装 coverage.py
+pip install coverage pytest
+
+# 2. 运行测试并收集覆盖率
+coverage run -m pytest
+
+# 3. 生成 Cobertura XML 报告
+coverage xml -o coverage.xml
+
+# 4. 上传到平台
+curl -X POST http://localhost:3001/api/upload/coverage \
+  -F "file=@coverage.xml" \
+  -F "projectId=<PROJECT_ID>" \
+  -F "commitHash=$(git rev-parse HEAD)" \
+  -F "branch=$(git rev-parse --abbrev-ref HEAD)"
 ```
 
 ## 📊 覆盖率报告上传
@@ -104,11 +126,19 @@ curl -X POST http://localhost:3001/api/upload/coverage \
   -F "commitHash=def456" \
   -F "branch=develop" \
   -F "file=@Demo.profraw"
+
+# Python
+curl -X POST http://localhost:3001/api/upload/coverage \
+  -F "projectId=3" \
+  -F "platform=python" \
+  -F "commitHash=abc789" \
+  -F "branch=main" \
+  -F "file=@coverage.xml"
 ```
 
 ### CI/CD 集成
 
-#### GitHub Actions 示例
+#### GitHub Actions 示例（Android）
 
 ```yaml
 name: Coverage Report
@@ -122,7 +152,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      
+
       - name: Upload Coverage
         run: |
           curl -X POST ${{ secrets.COVERAGE_PLATFORM_URL }}/api/upload/coverage \
@@ -131,6 +161,48 @@ jobs:
             -F "commitHash=${{ github.sha }}" \
             -F "branch=${{ github.ref_name }}" \
             -F "file=@app/build/outputs/code_coverage/coverage.ec"
+```
+
+#### GitHub Actions 示例（Python）
+
+```yaml
+name: Python Coverage
+
+on:
+  push:
+    branches: [ main, develop ]
+
+jobs:
+  upload-coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0   # 需要完整 git 历史用于增量覆盖率
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Run tests with coverage
+        run: |
+          pip install coverage pytest
+          coverage run -m pytest
+          coverage xml -o coverage.xml
+
+      - name: Generate git diff
+        run: |
+          BASE_COMMIT=$(git merge-base origin/main HEAD)
+          git diff $BASE_COMMIT HEAD --unified=0 > /tmp/diff.txt
+
+      - name: Upload Coverage
+        run: |
+          curl -X POST ${{ secrets.COVERAGE_PLATFORM_URL }}/api/upload/coverage \
+            -F "projectId=${{ secrets.PROJECT_ID }}" \
+            -F "commitHash=${{ github.sha }}" \
+            -F "branch=${{ github.ref_name }}" \
+            -F "file=@coverage.xml" \
+            -F "gitDiff=</tmp/diff.txt"
 ```
 
 ## 📈 API 文档
@@ -162,13 +234,15 @@ jobs:
 
 ## 🛠️ 技术栈
 
-- **Backend**: Node.js, Express, TypeScript, SQLite
-- **Frontend**: React, TypeScript, Bootstrap, Material Design
+- **Backend**: Node.js, Express, TypeScript, MongoDB
+- **Frontend**: React, TypeScript, Bootstrap
 - **Android**: JaCoCo, Kotlin
 - **iOS**: LLVM Sanitizer Coverage, Objective-C/Swift
+- **Python**: coverage.py (Cobertura XML / LCOV / JSON)
 
 ## 📚 详细文档
 
+- [工程接入指南](docs/integration-guide.md)
 - [Android 覆盖率方案](android-coverage/README.md)
 - [iOS 覆盖率方案](ios-coverage/README.md)
 - [后端 API 文档](docs/api.md)

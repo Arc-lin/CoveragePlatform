@@ -41,9 +41,11 @@ const Home: React.FC = () => {
   };
 
   const getPlatformBadge = (platform: string) => {
-    return platform === 'ios' 
-      ? <Badge bg="dark"><i className="fab fa-apple me-1"></i>iOS</Badge>
-      : <Badge bg="success"><i className="fab fa-android me-1"></i>Android</Badge>;
+    if (platform === 'ios')
+      return <Badge bg="dark"><i className="fab fa-apple me-1"></i>iOS</Badge>;
+    if (platform === 'python')
+      return <Badge bg="info"><i className="fab fa-python me-1"></i>Python</Badge>;
+    return <Badge bg="success"><i className="fab fa-android me-1"></i>Android</Badge>;
   };
 
   if (loading) {
@@ -70,8 +72,8 @@ const Home: React.FC = () => {
       {error && <Alert variant="danger">{error}</Alert>}
 
       {/* 统计卡片 */}
-      <Row className="mb-4">
-        <Col md={3}>
+      <Row className="mb-4 g-3">
+        <Col>
           <Card className="border-0 shadow-sm h-100">
             <Card.Body className="text-center">
               <div className="display-4 text-primary">{projects.length}</div>
@@ -79,7 +81,7 @@ const Home: React.FC = () => {
             </Card.Body>
           </Card>
         </Col>
-        <Col md={3}>
+        <Col>
           <Card className="border-0 shadow-sm h-100">
             <Card.Body className="text-center">
               <div className="display-4 text-success">
@@ -89,7 +91,7 @@ const Home: React.FC = () => {
             </Card.Body>
           </Card>
         </Col>
-        <Col md={3}>
+        <Col>
           <Card className="border-0 shadow-sm h-100">
             <Card.Body className="text-center">
               <div className="display-4 text-dark">
@@ -99,10 +101,20 @@ const Home: React.FC = () => {
             </Card.Body>
           </Card>
         </Col>
-        <Col md={3}>
+        <Col>
           <Card className="border-0 shadow-sm h-100">
             <Card.Body className="text-center">
-              <div className="display-4 text-info">{latestReports.size}</div>
+              <div className="display-4 text-info">
+                {projects.filter(p => p.platform === 'python').length}
+              </div>
+              <div className="text-muted">Python 项目</div>
+            </Card.Body>
+          </Card>
+        </Col>
+        <Col>
+          <Card className="border-0 shadow-sm h-100">
+            <Card.Body className="text-center">
+              <div className="display-4 text-warning">{latestReports.size}</div>
               <div className="text-muted">已有报告</div>
             </Card.Body>
           </Card>
@@ -157,14 +169,20 @@ const Home: React.FC = () => {
                   </Card.Body>
                   <Card.Footer className="bg-white border-top-0">
                     <div className="d-flex gap-2">
-                      <Link 
-                        to={`/projects/${project.id}`} 
+                      <Link
+                        to={`/projects/${project.id}`}
                         className="btn btn-outline-primary btn-sm flex-fill"
                       >
                         详情
                       </Link>
-                      <Link 
-                        to={`/upload?project=${project.id}`} 
+                      <Link
+                        to={`/builds/${project.id}`}
+                        className="btn btn-outline-secondary btn-sm flex-fill"
+                      >
+                        Builds
+                      </Link>
+                      <Link
+                        to={`/upload?project=${project.id}`}
                         className="btn btn-primary btn-sm flex-fill"
                       >
                         上传报告

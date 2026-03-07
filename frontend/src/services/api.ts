@@ -1,5 +1,5 @@
 import axios, { AxiosProgressEvent } from 'axios';
-import { Project, CoverageReport, FileInfo, FileCoverageResponse, IncrementalSummary } from '../types';
+import { Project, CoverageReport, FileInfo, FileCoverageResponse, IncrementalSummary, Build, RawUpload } from '../types';
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
 
@@ -60,6 +60,32 @@ export const uploadApi = {
       },
       onUploadProgress,
     }),
+};
+
+export const buildApi = {
+  getByProject: (projectId: string) =>
+    api.get<ApiResponse<Build[]>>(`/builds/project/${projectId}`),
+  getById: (buildId: string) =>
+    api.get<ApiResponse<Build>>(`/builds/${buildId}`),
+  create: (formData: FormData, onUploadProgress?: (e: AxiosProgressEvent) => void) =>
+    api.post<ApiResponse<Build>>('/builds', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      onUploadProgress,
+    }),
+  createFromPgyer: (data: {
+    projectId: string;
+    pgyerUrl: string;
+    commitHash: string;
+    branch: string;
+    buildVersion?: string;
+    gitDiff?: string;
+  }) => api.post<ApiResponse<{ taskId: string }>>('/builds/from-pgyer', data),
+  getRawUploads: (buildId: string) =>
+    api.get<ApiResponse<RawUpload[]>>(`/builds/${buildId}/raw-uploads`),
+  remerge: (buildId: string) =>
+    api.post<ApiResponse<Build>>(`/builds/${buildId}/remerge`),
+  delete: (buildId: string) =>
+    api.delete<ApiResponse<void>>(`/builds/${buildId}`),
 };
 
 export default api;

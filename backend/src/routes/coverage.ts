@@ -381,11 +381,16 @@ router.get('/:id/file/incremental', async (req: Request, res: Response) => {
     // 解析 git diff 获取该文件的变更行号
     const { parseGitDiff } = await import('../utils/coverageParser');
     const diffFiles = parseGitDiff(report.gitDiff);
-    const diffFile = diffFiles.find(f => 
-      filePath.endsWith(f.filePath) || 
-      f.filePath.endsWith(filePath) ||
-      filePath.replace(/\//g, '.').endsWith(f.filePath.replace(/\//g, '.'))
-    );
+    const diffFile = diffFiles.find(f => {
+      if (filePath === f.filePath) return true;
+      if (f.filePath.endsWith('/' + filePath)) return true;
+      if (filePath.endsWith('/' + f.filePath)) return true;
+      const fBasename = f.filePath.split('/').pop();
+      const queryBasename = filePath.split('/').pop();
+      if (fBasename === queryBasename) return true;
+      if (filePath.replace(/\//g, '.').endsWith(f.filePath.replace(/\//g, '.'))) return true;
+      return false;
+    });
 
     if (!diffFile) {
       return res.status(404).json({
@@ -513,6 +518,41 @@ router.get('/:id/source', async (req: Request, res: Response) => {
       for (const prefix of prefixes) {
         if (!normalizedPath.startsWith(prefix)) {
           pathCandidates.push(prefix + normalizedPath);
+        }
+      }
+    } else if (project.platform === 'python') {
+      // Python 项目常见源码路径前缀
+      const prefixes = ['src/', 'lib/', 'app/'];
+      for (const prefix of prefixes) {
+        if (!normalizedPath.startsWith(prefix)) {
+          pathCandidates.push(prefix + normalizedPath);
+        }
+      }
+      // 也尝试从 Cobertura XML 的 <source> 元素推断相对路径
+      // 例如 <source>/tmp/project/src</source> + filename="calculator.py" => src/calculator.py
+      if (report.reportPath) {
+        try {
+          const fs = await import('fs');
+          const head = fs.readFileSync(report.reportPath, 'utf-8').substring(0, 2000);
+          const sourceMatch = head.match(/<source>([^<]+)<\/source>/);
+          if (sourceMatch) {
+            const sourcePath = sourceMatch[1];
+            // 从 source 路径中提取 repo 相对部分
+            // 例如 /tmp/python-coverage-demo/src -> 找到 repo 名后取剩余部分 -> src
+            const repoIdx = sourcePath.indexOf(repo);
+            if (repoIdx >= 0) {
+              const relativeRoot = sourcePath.substring(repoIdx + repo.length + 1); // e.g. "src"
+              if (relativeRoot) {
+                const candidateFromSource = relativeRoot + '/' + normalizedPath;
+                if (!pathCandidates.includes(candidateFromSource)) {
+                  // 优先尝试这个路径
+                  pathCandidates.unshift(candidateFromSource);
+                }
+              }
+            }
+          }
+        } catch {
+          // ignore parse errors
         }
       }
     }
