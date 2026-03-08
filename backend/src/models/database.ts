@@ -218,7 +218,8 @@ export class MongoDatabase {
       filePath: doc.filePath,
       lineCoverage: doc.lineCoverage,
       totalLines: doc.totalLines,
-      coveredLines: doc.coveredLines
+      coveredLines: doc.coveredLines,
+      lines: doc.lines
     };
   }
 

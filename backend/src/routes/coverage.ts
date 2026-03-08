@@ -225,6 +225,20 @@ router.get('/:id/files', async (req: Request, res: Response) => {
       });
     }
 
+    // 优先从数据库获取文件覆盖率数据（适用于假数据）
+    const dbFiles = await mongoDb.getFileCoveragesByReport(id);
+    if (dbFiles && dbFiles.length > 0) {
+      const files = dbFiles.map(f => ({
+        filePath: f.filePath,
+        lineCoverage: f.lineCoverage,
+        totalLines: f.totalLines,
+        coveredLines: f.coveredLines,
+        lines: f.lines
+      }));
+      return res.json({ success: true, data: files });
+    }
+
+    // 否则从报告文件解析
     if (!report.reportPath) {
       return res.status(404).json({
         success: false,
@@ -315,6 +329,20 @@ router.get('/:id/file', async (req: Request, res: Response) => {
       });
     }
 
+    // 优先从数据库获取行级覆盖率数据（适用于假数据）
+    const dbFiles = await mongoDb.getFileCoveragesByReport(id);
+    const dbFile = dbFiles.find(f => f.filePath === filePath);
+    if (dbFile && dbFile.lines && dbFile.lines.length > 0) {
+      return res.json({
+        success: true,
+        data: {
+          filePath,
+          lines: dbFile.lines
+        }
+      });
+    }
+
+    // 否则从报告文件解析
     if (!report.reportPath) {
       return res.status(404).json({
         success: false,

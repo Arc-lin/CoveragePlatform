@@ -63,6 +63,7 @@ export interface IFileCoverage extends Document {
   lineCoverage: number;
   totalLines: number;
   coveredLines: number;
+  lines?: { lineNumber: number; isCovered: boolean; coveredInstructions?: number; missedInstructions?: number }[];
   createdAt: Date;
 }
 
@@ -98,6 +99,12 @@ const FileCoverageSchema = new Schema<IFileCoverage>({
   lineCoverage: { type: Number, required: true },
   totalLines: { type: Number, required: true },
   coveredLines: { type: Number, required: true },
+  lines: [{
+    lineNumber: Number,
+    isCovered: Boolean,
+    coveredInstructions: Number,
+    missedInstructions: Number
+  }],
   createdAt: { type: Date, default: Date.now }
 });
 
