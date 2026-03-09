@@ -149,6 +149,11 @@ export class MongoDatabase {
     return fileCoverages.map(fc => this.toFileCoverage(fc));
   }
 
+  async getFileCoverageByReportAndPath(reportId: string, filePath: string): Promise<FileCoverage | undefined> {
+    const doc = await FileCoverageModel.findOne({ reportId, filePath });
+    return doc ? this.toFileCoverage(doc) : undefined;
+  }
+
   // 覆盖率摘要
   async getCoverageSummary(projectId: string) {
     const reports = await this.getReportsByProject(projectId);
@@ -212,7 +217,7 @@ export class MongoDatabase {
   }
 
   private toFileCoverage(doc: IFileCoverage): FileCoverage {
-    return {
+    const result: FileCoverage = {
       id: doc._id.toString(),
       reportId: doc.reportId.toString(),
       filePath: doc.filePath,
@@ -220,6 +225,10 @@ export class MongoDatabase {
       totalLines: doc.totalLines,
       coveredLines: doc.coveredLines
     };
+    if (doc.lines && doc.lines.length > 0) {
+      result.lines = doc.lines;
+    }
+    return result;
   }
 
   // Build 操作

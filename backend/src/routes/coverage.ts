@@ -225,6 +225,13 @@ router.get('/:id/files', async (req: Request, res: Response) => {
       });
     }
 
+    // 优先从数据库获取文件覆盖率数据
+    const dbFiles = await mongoDb.getFileCoveragesByReport(id);
+    if (dbFiles && dbFiles.length > 0) {
+      return res.json({ success: true, data: dbFiles });
+    }
+
+    // 数据库没有则从报告文件解析
     if (!report.reportPath) {
       return res.status(404).json({
         success: false,
@@ -315,6 +322,19 @@ router.get('/:id/file', async (req: Request, res: Response) => {
       });
     }
 
+    // 优先从数据库获取行级覆盖率数据
+    const dbFile = await mongoDb.getFileCoverageByReportAndPath(id, filePath);
+    if (dbFile && dbFile.lines && dbFile.lines.length > 0) {
+      return res.json({
+        success: true,
+        data: {
+          filePath,
+          lines: dbFile.lines
+        }
+      });
+    }
+
+    // 数据库没有则从报告文件解析
     if (!report.reportPath) {
       return res.status(404).json({
         success: false,

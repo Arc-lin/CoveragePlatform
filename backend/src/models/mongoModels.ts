@@ -63,6 +63,7 @@ export interface IFileCoverage extends Document {
   lineCoverage: number;
   totalLines: number;
   coveredLines: number;
+  lines?: { lineNumber: number; isCovered: boolean; coveredInstructions?: number; missedInstructions?: number }[];
   createdAt: Date;
 }
 
@@ -98,6 +99,12 @@ const FileCoverageSchema = new Schema<IFileCoverage>({
   lineCoverage: { type: Number, required: true },
   totalLines: { type: Number, required: true },
   coveredLines: { type: Number, required: true },
+  lines: [{
+    lineNumber: Number,
+    isCovered: Boolean,
+    coveredInstructions: Number,
+    missedInstructions: Number
+  }],
   createdAt: { type: Date, default: Date.now }
 });
 
@@ -109,6 +116,7 @@ CoverageReportSchema.index({ commitHash: 1 });
 CoverageReportSchema.index({ buildId: 1 });
 FileCoverageSchema.index({ reportId: 1 });
 FileCoverageSchema.index({ filePath: 1 });
+FileCoverageSchema.index({ reportId: 1, filePath: 1 });
 
 // 构建模型
 const BuildSchema = new Schema<IBuild>({

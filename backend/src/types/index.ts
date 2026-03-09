@@ -66,6 +66,15 @@ export interface FileCoverage {
   lineCoverage: number;
   totalLines: number;
   coveredLines: number;
+  lines?: FileCoverageLine[];
+}
+
+// 行级覆盖率数据
+export interface FileCoverageLine {
+  lineNumber: number;
+  isCovered: boolean;
+  coveredInstructions?: number;
+  missedInstructions?: number;
 }
 
 // 上传请求类型
