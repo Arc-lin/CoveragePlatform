@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Card, Table, Badge, Button, Spinner, Alert, Modal, Form } from 'react-bootstrap';
+import { Card, Table, Button, Spinner, Alert, Modal, Form } from 'react-bootstrap';
 import { projectApi } from '../services/api';
 import { Project } from '../types';
+import { getPlatformBadge } from '../utils/coverage';
 
 const Projects: React.FC = () => {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -56,12 +57,6 @@ const Projects: React.FC = () => {
     }
   };
 
-  const getPlatformBadge = (platform: string) => {
-    if (platform === 'ios') return <Badge bg="dark">iOS</Badge>;
-    if (platform === 'python') return <Badge bg="info">Python</Badge>;
-    return <Badge bg="success">Android</Badge>;
-  };
-
   if (loading) {
     return (
       <div className="text-center py-5">
@@ -75,7 +70,7 @@ const Projects: React.FC = () => {
       <div className="d-flex justify-content-between align-items-center mb-4">
         <h2>项目管理</h2>
         <Button variant="primary" onClick={() => setShowModal(true)}>
-          <i className="fas fa-plus me-2"></i>新建项目
+          <i className="bi bi-plus-lg me-2"></i>新建项目
         </Button>
       </div>
 

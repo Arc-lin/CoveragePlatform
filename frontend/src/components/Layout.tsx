@@ -1,15 +1,14 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import 'bootstrap/dist/css/bootstrap.min.css';
 
 const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const location = useLocation();
 
   const navItems = [
-    { path: '/', label: '首页', icon: '🏠' },
-    { path: '/projects', label: '项目管理', icon: '📁' },
-    { path: '/reports', label: '覆盖率报告', icon: '📊' },
-    { path: '/upload', label: '上传报告', icon: '⬆️' },
+    { path: '/', label: '首页', icon: 'bi-house-door' },
+    { path: '/projects', label: '项目管理', icon: 'bi-folder2' },
+    { path: '/reports', label: '覆盖率报告', icon: 'bi-bar-chart-line' },
+    { path: '/upload', label: '上传报告', icon: 'bi-cloud-arrow-up' },
   ];
 
   const isNavActive = (path: string) => {
@@ -22,10 +21,10 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   return (
     <div className="d-flex flex-column min-vh-100">
       {/* Header */}
-      <nav className="navbar navbar-expand-lg navbar-dark bg-primary shadow-sm">
+      <nav className="navbar navbar-expand-lg navbar-dark cp-navbar shadow-sm sticky-top">
         <div className="container">
           <Link className="navbar-brand d-flex align-items-center" to="/">
-            <span className="fs-4 me-2">📈</span>
+            <i className="bi bi-graph-up-arrow fs-4 me-2"></i>
             <span className="fw-bold">Code Coverage Platform</span>
           </Link>
           <button
@@ -46,7 +45,7 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                     }`}
                     to={item.path}
                   >
-                    <span className="me-1">{item.icon}</span>
+                    <i className={`bi ${item.icon} me-1`}></i>
                     {item.label}
                   </Link>
                 </li>
@@ -57,14 +56,14 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
       </nav>
 
       {/* Main Content */}
-      <main className="flex-grow-1 bg-light">
-        <div className="container py-4">
+      <main className="flex-grow-1" style={{ backgroundColor: 'var(--cp-bg)' }}>
+        <div className="container py-4 page-enter">
           {children}
         </div>
       </main>
 
       {/* Footer */}
-      <footer className="bg-white border-top py-3">
+      <footer className="cp-footer">
         <div className="container text-center text-muted">
           <small>Code Coverage Platform © 2026 - iOS & Android Coverage Statistics</small>
         </div>

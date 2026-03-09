@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { Card, Badge, Button, Spinner, Alert, ListGroup, Row, Col, ProgressBar, Form } from 'react-bootstrap';
 import { coverageApi, projectApi } from '../services/api';
 import { CoverageReport, Project, FileInfo, LineCoverageDetail, IncrementalSummary } from '../types';
+import { getCoverageColor, getCoverageBadge } from '../utils/coverage';
 
 const ReportDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -126,16 +127,6 @@ const ReportDetail: React.FC = () => {
     }
   };
 
-  const getCoverageColor = (coverage: number) => {
-    if (coverage >= 80) return 'success';
-    if (coverage >= 60) return 'warning';
-    return 'danger';
-  };
-
-  const getCoverageBadge = (coverage: number) => {
-    const color = getCoverageColor(coverage);
-    return <Badge bg={color}>{coverage.toFixed(1)}%</Badge>;
-  };
 
   // 获取当前显示的文件列表
   const currentFiles = showIncremental ? incrementalFiles : allFiles;
@@ -183,7 +174,7 @@ const ReportDetail: React.FC = () => {
       {/* Report Info Card */}
       <Card className="border-0 shadow-sm mb-4">
         <Card.Header className="bg-primary text-white">
-          <h5 className="mb-0">📊 Report Information</h5>
+          <h5 className="mb-0"><i className="bi bi-clipboard-data me-2"></i>Report Information</h5>
         </Card.Header>
         <Card.Body>
           <Row>
@@ -334,7 +325,7 @@ const ReportDetail: React.FC = () => {
       {!report?.gitDiff && (
         <Card className="border-0 shadow-sm mb-4">
           <Card.Header className="bg-info text-white">
-            <h5 className="mb-0">📈 Incremental Coverage Analysis</h5>
+            <h5 className="mb-0"><i className="bi bi-graph-up me-2"></i>Incremental Coverage Analysis</h5>
           </Card.Header>
           <Card.Body>
             <Form.Group className="mb-3">
@@ -398,12 +389,12 @@ const ReportDetail: React.FC = () => {
               <h6 className="mb-0">
                 {showIncremental ? (
                   <>
-                    📁 Changed Files
+                    <i className="bi bi-folder2-open me-2"></i>Changed Files
                     <Badge bg="info" className="ms-2">{currentFiles.length}</Badge>
                   </>
                 ) : (
                   <>
-                    📁 All Files
+                    <i className="bi bi-folder2 me-2"></i>All Files
                     <Badge bg="secondary" className="ms-2">{currentFiles.length}</Badge>
                   </>
                 )}
@@ -417,7 +408,7 @@ const ReportDetail: React.FC = () => {
                 <ListGroup.Item className="text-center text-muted py-4">
                   {showIncremental ? (
                     <div>
-                      <div className="mb-2">📝</div>
+                      <div className="mb-2"><i className="bi bi-file-earmark-text empty-state-icon"></i></div>
                       <div>No changed files found</div>
                       <small>This commit may not have any changes or no coverage data for changed files</small>
                     </div>
@@ -505,9 +496,6 @@ const ReportDetail: React.FC = () => {
                     style={{
                       maxHeight: '600px',
                       overflow: 'auto',
-                      fontFamily: 'monospace',
-                      fontSize: '14px',
-                      lineHeight: '1.5'
                     }}
                   >
                     {fileCoverage.map((line) => {
@@ -560,9 +548,11 @@ const ReportDetail: React.FC = () => {
                           <div
                             className="text-muted text-end pe-3"
                             style={{
-                              minWidth: '50px',
-                              userSelect: 'none',
-                              backgroundColor: 'rgba(0,0,0,0.03)'
+                              minWidth: '55px',
+                              userSelect: 'none' as const,
+                              backgroundColor: '#f1f3f5',
+                              borderRight: '1px solid #e5e7eb',
+                              fontSize: '12px',
                             }}
                           >
                             {line.lineNumber}
@@ -612,7 +602,7 @@ const ReportDetail: React.FC = () => {
                 )
               ) : (
                 <div className="text-center py-5 text-muted">
-                  <div className="mb-3">📄</div>
+                  <div className="empty-state-icon"><i className="bi bi-file-earmark-code"></i></div>
                   <p>Select a file from the list to view detailed coverage</p>
                 </div>
               )}

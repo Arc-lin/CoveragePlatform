@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Card, Row, Col, Badge, Spinner, Alert } from 'react-bootstrap';
+import { Card, Row, Col, Spinner, Alert } from 'react-bootstrap';
 import { projectApi, coverageApi } from '../services/api';
 import { Project, CoverageReport } from '../types';
+import { getPlatformBadge } from '../utils/coverage';
 
 const Home: React.FC = () => {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -40,14 +41,6 @@ const Home: React.FC = () => {
     }
   };
 
-  const getPlatformBadge = (platform: string) => {
-    if (platform === 'ios')
-      return <Badge bg="dark"><i className="fab fa-apple me-1"></i>iOS</Badge>;
-    if (platform === 'python')
-      return <Badge bg="info"><i className="fab fa-python me-1"></i>Python</Badge>;
-    return <Badge bg="success"><i className="fab fa-android me-1"></i>Android</Badge>;
-  };
-
   if (loading) {
     return (
       <div className="text-center py-5">
@@ -65,7 +58,7 @@ const Home: React.FC = () => {
           <p className="text-muted mb-0">代码覆盖率统计概览</p>
         </div>
         <Link to="/projects" className="btn btn-primary">
-          <i className="fas fa-plus me-2"></i>新建项目
+          <i className="bi bi-plus-lg me-2"></i>新建项目
         </Link>
       </div>
 
@@ -74,48 +67,48 @@ const Home: React.FC = () => {
       {/* 统计卡片 */}
       <Row className="mb-4 g-3">
         <Col>
-          <Card className="border-0 shadow-sm h-100">
-            <Card.Body className="text-center">
-              <div className="display-4 text-primary">{projects.length}</div>
-              <div className="text-muted">总项目数</div>
+          <Card className="h-100">
+            <Card.Body className="stat-card-custom accent-primary">
+              <div className="stat-number text-primary">{projects.length}</div>
+              <div className="stat-label">总项目数</div>
             </Card.Body>
           </Card>
         </Col>
         <Col>
-          <Card className="border-0 shadow-sm h-100">
-            <Card.Body className="text-center">
-              <div className="display-4 text-success">
+          <Card className="h-100">
+            <Card.Body className="stat-card-custom accent-success">
+              <div className="stat-number text-success">
                 {projects.filter(p => p.platform === 'android').length}
               </div>
-              <div className="text-muted">Android 项目</div>
+              <div className="stat-label">Android 项目</div>
             </Card.Body>
           </Card>
         </Col>
         <Col>
-          <Card className="border-0 shadow-sm h-100">
-            <Card.Body className="text-center">
-              <div className="display-4 text-dark">
+          <Card className="h-100">
+            <Card.Body className="stat-card-custom accent-dark">
+              <div className="stat-number text-dark">
                 {projects.filter(p => p.platform === 'ios').length}
               </div>
-              <div className="text-muted">iOS 项目</div>
+              <div className="stat-label">iOS 项目</div>
             </Card.Body>
           </Card>
         </Col>
         <Col>
-          <Card className="border-0 shadow-sm h-100">
-            <Card.Body className="text-center">
-              <div className="display-4 text-info">
+          <Card className="h-100">
+            <Card.Body className="stat-card-custom accent-info">
+              <div className="stat-number text-info">
                 {projects.filter(p => p.platform === 'python').length}
               </div>
-              <div className="text-muted">Python 项目</div>
+              <div className="stat-label">Python 项目</div>
             </Card.Body>
           </Card>
         </Col>
         <Col>
-          <Card className="border-0 shadow-sm h-100">
-            <Card.Body className="text-center">
-              <div className="display-4 text-warning">{latestReports.size}</div>
-              <div className="text-muted">已有报告</div>
+          <Card className="h-100">
+            <Card.Body className="stat-card-custom accent-warning">
+              <div className="stat-number text-warning">{latestReports.size}</div>
+              <div className="stat-label">已有报告</div>
             </Card.Body>
           </Card>
         </Col>
@@ -126,7 +119,7 @@ const Home: React.FC = () => {
       {projects.length === 0 ? (
         <Card className="border-0 shadow-sm">
           <Card.Body className="text-center py-5">
-            <div className="mb-3">📁</div>
+            <div className="empty-state-icon"><i className="bi bi-folder-plus"></i></div>
             <h5>暂无项目</h5>
             <p className="text-muted">创建第一个项目开始收集代码覆盖率数据</p>
             <Link to="/projects" className="btn btn-primary">
@@ -140,7 +133,7 @@ const Home: React.FC = () => {
             const report = latestReports.get(project.id);
             return (
               <Col md={6} lg={4} key={project.id} className="mb-3">
-                <Card className="border-0 shadow-sm h-100 project-card">
+                <Card className="h-100 project-card card-animated">
                   <Card.Body>
                     <div className="d-flex justify-content-between align-items-start mb-2">
                       <h5 className="mb-0">{project.name}</h5>
@@ -149,7 +142,7 @@ const Home: React.FC = () => {
                     
                     {project.repositoryUrl && (
                       <p className="text-muted small mb-3 text-truncate">
-                        <i className="fab fa-github me-1"></i>
+                        <i className="bi bi-github me-1"></i>
                         {project.repositoryUrl}
                       </p>
                     )}

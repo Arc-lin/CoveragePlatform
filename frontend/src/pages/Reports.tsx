@@ -3,6 +3,7 @@ import { useParams, Link, useNavigate } from 'react-router-dom';
 import { Card, Table, Badge, Button, Spinner, Alert, Form, Row, Col, Modal } from 'react-bootstrap';
 import { projectApi, coverageApi } from '../services/api';
 import { Project, CoverageReport } from '../types';
+import { getCoverageBadge } from '../utils/coverage';
 
 const Reports: React.FC = () => {
   const { projectId } = useParams<{ projectId: string }>();
@@ -62,17 +63,6 @@ const Reports: React.FC = () => {
       setSelectedProject(project);
       loadReports(id);
     }
-  };
-
-  const getCoverageColor = (coverage: number) => {
-    if (coverage >= 80) return 'success';
-    if (coverage >= 60) return 'warning';
-    return 'danger';
-  };
-
-  const getCoverageBadge = (coverage: number) => {
-    const color = getCoverageColor(coverage);
-    return <Badge bg={color}>{coverage.toFixed(1)}%</Badge>;
   };
 
   const handleDeleteClick = (report: CoverageReport) => {
@@ -231,32 +221,32 @@ const Reports: React.FC = () => {
       {!loading && reports.length > 0 && (
         <Row className="mt-4">
           <Col md={4}>
-            <Card className="border-0 shadow-sm text-center">
-              <Card.Body>
-                <h3 className="text-primary">{reports.length}</h3>
-                <p className="text-muted mb-0">总报告数</p>
+            <Card className="text-center">
+              <Card.Body className="stat-card-custom accent-primary">
+                <div className="stat-number text-primary">{reports.length}</div>
+                <div className="stat-label">总报告数</div>
               </Card.Body>
             </Card>
           </Col>
           <Col md={4}>
-            <Card className="border-0 shadow-sm text-center">
-              <Card.Body>
-                <h3 className="text-success">
+            <Card className="text-center">
+              <Card.Body className="stat-card-custom accent-success">
+                <div className="stat-number text-success">
                   {reports[0].incrementalCoverage !== undefined
                     ? `${reports[0].incrementalCoverage.toFixed(1)}%`
                     : '-'}
-                </h3>
-                <p className="text-muted mb-0">最新增量覆盖率</p>
+                </div>
+                <div className="stat-label">最新增量覆盖率</div>
               </Card.Body>
             </Card>
           </Col>
           <Col md={4}>
-            <Card className="border-0 shadow-sm text-center">
-              <Card.Body>
-                <h3 className="text-info">
+            <Card className="text-center">
+              <Card.Body className="stat-card-custom accent-info">
+                <div className="stat-number text-info">
                   {new Set(reports.map(r => r.branch)).size}
-                </h3>
-                <p className="text-muted mb-0">分支数</p>
+                </div>
+                <div className="stat-label">分支数</div>
               </Card.Body>
             </Card>
           </Col>

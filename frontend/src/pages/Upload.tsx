@@ -241,7 +241,7 @@ const Upload: React.FC = () => {
                     </>
                   ) : (
                     <>
-                      <i className="fas fa-upload me-2"></i>上传报告
+                      <i className="bi bi-cloud-arrow-up me-2"></i>上传报告
                     </>
                   )}
                 </Button>
@@ -254,7 +254,7 @@ const Upload: React.FC = () => {
       {/* 使用说明 */}
       <Card className="border-0 shadow-sm mt-4">
         <Card.Header className="bg-light">
-          <h5 className="mb-0">📖 使用说明</h5>
+          <h5 className="mb-0"><i className="bi bi-book me-2"></i>使用说明</h5>
         </Card.Header>
         <Card.Body>
           <h6>Android 项目</h6>
