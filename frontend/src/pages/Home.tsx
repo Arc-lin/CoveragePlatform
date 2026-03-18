@@ -1,12 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Card, Row, Col, ProgressBar, Badge, Spinner, Alert } from 'react-bootstrap';
+import { Card, Row, Col, Spinner, Alert } from 'react-bootstrap';
 import { projectApi, coverageApi } from '../services/api';
 import { Project, CoverageReport } from '../types';
+import { getPlatformBadge } from '../utils/coverage';
 
 const Home: React.FC = () => {
   const [projects, setProjects] = useState<Project[]>([]);
-  const [latestReports, setLatestReports] = useState<Map<number, CoverageReport>>(new Map());
+  const [latestReports, setLatestReports] = useState<Map<string, CoverageReport>>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -21,19 +22,16 @@ const Home: React.FC = () => {
       const projectList = projectsRes.data.data || [];
       setProjects(projectList);
 
-      // 加载每个项目的最新覆盖率
-      const reportsMap = new Map<number, CoverageReport>();
-      for (const project of projectList) {
-        try {
-          const reportRes = await coverageApi.getLatest(project.id);
-          if (reportRes.data.data) {
-            reportsMap.set(project.id, reportRes.data.data);
-          }
-        } catch (e) {
-          // 忽略单个项目的错误
+      // 批量获取所有项目的最新覆盖率（单次请求）
+      if (projectList.length > 0) {
+        const ids = projectList.map((p: Project) => p.id);
+        const reportsRes = await coverageApi.getLatestBatch(ids);
+        const reportsMap = new Map<string, CoverageReport>();
+        for (const report of (reportsRes.data.data || [])) {
+          reportsMap.set(report.projectId, report);
         }
+        setLatestReports(reportsMap);
       }
-      setLatestReports(reportsMap);
       setError(null);
     } catch (err) {
       setError('Failed to load data');
@@ -41,18 +39,6 @@ const Home: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  };
-
-  const getPlatformBadge = (platform: string) => {
-    return platform === 'ios' 
-      ? <Badge bg="dark"><i className="fab fa-apple me-1"></i>iOS</Badge>
-      : <Badge bg="success"><i className="fab fa-android me-1"></i>Android</Badge>;
-  };
-
-  const getCoverageColor = (coverage: number) => {
-    if (coverage >= 80) return 'success';
-    if (coverage >= 60) return 'warning';
-    return 'danger';
   };
 
   if (loading) {
@@ -71,48 +57,58 @@ const Home: React.FC = () => {
           <h2 className="mb-1">Dashboard</h2>
           <p className="text-muted mb-0">代码覆盖率统计概览</p>
         </div>
-        <Link to="/projects/new" className="btn btn-primary">
-          <i className="fas fa-plus me-2"></i>新建项目
+        <Link to="/projects" className="btn btn-primary">
+          <i className="bi bi-plus-lg me-2"></i>新建项目
         </Link>
       </div>
 
       {error && <Alert variant="danger">{error}</Alert>}
 
       {/* 统计卡片 */}
-      <Row className="mb-4">
-        <Col md={3}>
-          <Card className="border-0 shadow-sm h-100">
-            <Card.Body className="text-center">
-              <div className="display-4 text-primary">{projects.length}</div>
-              <div className="text-muted">总项目数</div>
+      <Row className="mb-4 g-3">
+        <Col>
+          <Card className="h-100">
+            <Card.Body className="stat-card-custom accent-primary">
+              <div className="stat-number text-primary">{projects.length}</div>
+              <div className="stat-label">总项目数</div>
             </Card.Body>
           </Card>
         </Col>
-        <Col md={3}>
-          <Card className="border-0 shadow-sm h-100">
-            <Card.Body className="text-center">
-              <div className="display-4 text-success">
+        <Col>
+          <Card className="h-100">
+            <Card.Body className="stat-card-custom accent-success">
+              <div className="stat-number text-success">
                 {projects.filter(p => p.platform === 'android').length}
               </div>
-              <div className="text-muted">Android 项目</div>
+              <div className="stat-label">Android 项目</div>
             </Card.Body>
           </Card>
         </Col>
-        <Col md={3}>
-          <Card className="border-0 shadow-sm h-100">
-            <Card.Body className="text-center">
-              <div className="display-4 text-dark">
+        <Col>
+          <Card className="h-100">
+            <Card.Body className="stat-card-custom accent-dark">
+              <div className="stat-number text-dark">
                 {projects.filter(p => p.platform === 'ios').length}
               </div>
-              <div className="text-muted">iOS 项目</div>
+              <div className="stat-label">iOS 项目</div>
             </Card.Body>
           </Card>
         </Col>
-        <Col md={3}>
-          <Card className="border-0 shadow-sm h-100">
-            <Card.Body className="text-center">
-              <div className="display-4 text-info">{latestReports.size}</div>
-              <div className="text-muted">已有报告</div>
+        <Col>
+          <Card className="h-100">
+            <Card.Body className="stat-card-custom accent-info">
+              <div className="stat-number text-info">
+                {projects.filter(p => p.platform === 'python').length}
+              </div>
+              <div className="stat-label">Python 项目</div>
+            </Card.Body>
+          </Card>
+        </Col>
+        <Col>
+          <Card className="h-100">
+            <Card.Body className="stat-card-custom accent-warning">
+              <div className="stat-number text-warning">{latestReports.size}</div>
+              <div className="stat-label">已有报告</div>
             </Card.Body>
           </Card>
         </Col>
@@ -123,10 +119,10 @@ const Home: React.FC = () => {
       {projects.length === 0 ? (
         <Card className="border-0 shadow-sm">
           <Card.Body className="text-center py-5">
-            <div className="mb-3">📁</div>
+            <div className="empty-state-icon"><i className="bi bi-folder-plus"></i></div>
             <h5>暂无项目</h5>
             <p className="text-muted">创建第一个项目开始收集代码覆盖率数据</p>
-            <Link to="/projects/new" className="btn btn-primary">
+            <Link to="/projects" className="btn btn-primary">
               创建项目
             </Link>
           </Card.Body>
@@ -137,7 +133,7 @@ const Home: React.FC = () => {
             const report = latestReports.get(project.id);
             return (
               <Col md={6} lg={4} key={project.id} className="mb-3">
-                <Card className="border-0 shadow-sm h-100 project-card">
+                <Card className="h-100 project-card card-animated">
                   <Card.Body>
                     <div className="d-flex justify-content-between align-items-start mb-2">
                       <h5 className="mb-0">{project.name}</h5>
@@ -146,25 +142,13 @@ const Home: React.FC = () => {
                     
                     {project.repositoryUrl && (
                       <p className="text-muted small mb-3 text-truncate">
-                        <i className="fab fa-github me-1"></i>
+                        <i className="bi bi-github me-1"></i>
                         {project.repositoryUrl}
                       </p>
                     )}
 
                     {report ? (
                       <div>
-                        <div className="d-flex justify-content-between align-items-center mb-2">
-                          <span className="text-muted small">行覆盖率</span>
-                          <span className={`text-${getCoverageColor(report.lineCoverage)} fw-bold`}>
-                            {report.lineCoverage.toFixed(1)}%
-                          </span>
-                        </div>
-                        <ProgressBar 
-                          now={report.lineCoverage} 
-                          variant={getCoverageColor(report.lineCoverage)}
-                          className="mb-3"
-                          style={{ height: '8px' }}
-                        />
                         <div className="d-flex justify-content-between text-muted small">
                           <span>Commit: {report.commitHash.substring(0, 7)}</span>
                           <span>{new Date(report.createdAt).toLocaleDateString()}</span>
@@ -178,14 +162,20 @@ const Home: React.FC = () => {
                   </Card.Body>
                   <Card.Footer className="bg-white border-top-0">
                     <div className="d-flex gap-2">
-                      <Link 
-                        to={`/projects/${project.id}`} 
+                      <Link
+                        to={`/projects/${project.id}`}
                         className="btn btn-outline-primary btn-sm flex-fill"
                       >
                         详情
                       </Link>
-                      <Link 
-                        to={`/upload?project=${project.id}`} 
+                      <Link
+                        to={`/builds/${project.id}`}
+                        className="btn btn-outline-secondary btn-sm flex-fill"
+                      >
+                        Builds
+                      </Link>
+                      <Link
+                        to={`/upload?project=${project.id}`}
                         className="btn btn-primary btn-sm flex-fill"
                       >
                         上传报告

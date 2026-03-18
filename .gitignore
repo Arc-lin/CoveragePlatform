@@ -1,0 +1,36 @@
+# Dependencies
+frontend/node_modules/
+backend/node_modules/
+
+# Build output
+frontend/build/
+backend/dist/
+
+# Environment variables
+*.env
+.env.*
+!.env.example
+
+# Upload and report files
+uploads/
+reports/
+
+# Build artifacts (coverage data)
+backend/builds/
+
+# Tools (jacococli.jar etc.)
+backend/tools/
+
+# IDE / Editor
+.qwen/
+.claude/
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*

@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Card, Table, Badge, Button, Spinner, Alert, Modal, Form } from 'react-bootstrap';
+import { Card, Table, Button, Spinner, Alert, Modal, Form } from 'react-bootstrap';
 import { projectApi } from '../services/api';
 import { Project } from '../types';
+import { getPlatformBadge } from '../utils/coverage';
 
 const Projects: React.FC = () => {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -11,7 +12,7 @@ const Projects: React.FC = () => {
   const [showModal, setShowModal] = useState(false);
   const [formData, setFormData] = useState({
     name: '',
-    platform: 'android' as 'ios' | 'android',
+    platform: 'android' as 'ios' | 'android' | 'python',
     repositoryUrl: ''
   });
   const navigate = useNavigate();
@@ -46,7 +47,7 @@ const Projects: React.FC = () => {
     }
   };
 
-  const handleDelete = async (id: number) => {
+  const handleDelete = async (id: string) => {
     if (!window.confirm('确定要删除这个项目吗？')) return;
     try {
       await projectApi.delete(id);
@@ -54,12 +55,6 @@ const Projects: React.FC = () => {
     } catch (err) {
       setError('Failed to delete project');
     }
-  };
-
-  const getPlatformBadge = (platform: string) => {
-    return platform === 'ios' 
-      ? <Badge bg="dark">iOS</Badge>
-      : <Badge bg="success">Android</Badge>;
   };
 
   if (loading) {
@@ -75,7 +70,7 @@ const Projects: React.FC = () => {
       <div className="d-flex justify-content-between align-items-center mb-4">
         <h2>项目管理</h2>
         <Button variant="primary" onClick={() => setShowModal(true)}>
-          <i className="fas fa-plus me-2"></i>新建项目
+          <i className="bi bi-plus-lg me-2"></i>新建项目
         </Button>
       </div>
 
@@ -168,20 +163,25 @@ const Projects: React.FC = () => {
               <Form.Label>平台</Form.Label>
               <Form.Select
                 value={formData.platform}
-                onChange={e => setFormData({ ...formData, platform: e.target.value as 'ios' | 'android' })}
+                onChange={e => setFormData({ ...formData, platform: e.target.value as 'ios' | 'android' | 'python' })}
               >
                 <option value="android">Android</option>
                 <option value="ios">iOS</option>
+                <option value="python">Python</option>
               </Form.Select>
             </Form.Group>
             <Form.Group className="mb-3">
-              <Form.Label>仓库地址（可选）</Form.Label>
+              <Form.Label>仓库地址</Form.Label>
               <Form.Control
                 type="url"
+                required
                 value={formData.repositoryUrl}
                 onChange={e => setFormData({ ...formData, repositoryUrl: e.target.value })}
                 placeholder="https://github.com/..."
               />
+              <Form.Text className="text-muted">
+                用于获取源码展示覆盖率详情，目前仅支持 GitHub 仓库
+              </Form.Text>
             </Form.Group>
           </Modal.Body>
           <Modal.Footer>

@@ -6,6 +6,7 @@ import Projects from './pages/Projects';
 import Reports from './pages/Reports';
 import ReportDetail from './pages/ReportDetail';
 import Upload from './pages/Upload';
+import Builds from './pages/Builds';
 import './App.css';
 
 const App: React.FC = () => {
@@ -20,6 +21,7 @@ const App: React.FC = () => {
           <Route path="/reports/:projectId" element={<Reports />} />
           <Route path="/report/:id" element={<ReportDetail />} />
           <Route path="/upload" element={<Upload />} />
+          <Route path="/builds/:projectId" element={<Builds />} />
         </Routes>
       </Layout>
     </Router>

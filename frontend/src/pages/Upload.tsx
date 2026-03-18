@@ -20,7 +20,7 @@ const Upload: React.FC = () => {
     projectId: preselectedProject || '',
     commitHash: '',
     branch: 'main',
-    platform: 'android' as 'ios' | 'android',
+    platform: 'android' as 'ios' | 'android' | 'python',
     file: null as File | null
   });
 
@@ -37,7 +37,7 @@ const Upload: React.FC = () => {
       
       // 如果有预选项目，设置平台
       if (preselectedProject) {
-        const project = projectList.find((p: Project) => p.id === parseInt(preselectedProject));
+        const project = projectList.find((p: Project) => p.id === preselectedProject);
         if (project) {
           setFormData(prev => ({ ...prev, platform: project.platform }));
         }
@@ -76,7 +76,10 @@ const Upload: React.FC = () => {
       data.append('branch', formData.branch);
       data.append('platform', formData.platform);
 
-      const res = await uploadApi.uploadCoverage(data);
+      const res = await uploadApi.uploadCoverage(data, (progressEvent) => {
+        const percent = Math.round((progressEvent.loaded * 100) / (progressEvent.total || 1));
+        setUploadProgress(percent);
+      });
       
       if (res.data.success) {
         setSuccess(`上传成功！报告ID: ${res.data.data?.reportId || 'unknown'}`);
@@ -101,9 +104,9 @@ const Upload: React.FC = () => {
   };
 
   const getAcceptedFileTypes = () => {
-    return formData.platform === 'android' 
-      ? '.ec,.exec,.xml,.info'
-      : '.profraw,.profdata,.info';
+    if (formData.platform === 'android') return '.ec,.exec,.xml,.info';
+    if (formData.platform === 'python') return '.xml,.info,.json';
+    return '.profraw,.profdata,.info';
   };
 
   return (
@@ -137,7 +140,7 @@ const Upload: React.FC = () => {
                   value={formData.projectId}
                   onChange={e => {
                     const projectId = e.target.value;
-                    const project = projects.find(p => p.id === parseInt(projectId));
+                    const project = projects.find(p => p.id === projectId);
                     setFormData({ 
                       ...formData, 
                       projectId,
@@ -159,11 +162,12 @@ const Upload: React.FC = () => {
                 <Form.Label>平台</Form.Label>
                 <Form.Select
                   value={formData.platform}
-                  onChange={e => setFormData({ ...formData, platform: e.target.value as 'ios' | 'android' })}
+                  onChange={e => setFormData({ ...formData, platform: e.target.value as 'ios' | 'android' | 'python' })}
                   disabled
                 >
                   <option value="android">Android</option>
                   <option value="ios">iOS</option>
+                  <option value="python">Python</option>
                 </Form.Select>
                 <Form.Text className="text-muted">
                   平台由所选项目决定
@@ -205,9 +209,11 @@ const Upload: React.FC = () => {
                   onChange={handleFileChange}
                 />
                 <Form.Text className="text-muted">
-                  {formData.platform === 'android' 
+                  {formData.platform === 'android'
                     ? '支持格式: .ec, .exec, .xml, .info (JaCoCo 报告)'
-                    : '支持格式: .profraw, .profdata, .info (LLVM Coverage 报告)'}
+                    : formData.platform === 'python'
+                      ? '支持格式: .xml (Cobertura), .info (LCOV), .json (coverage.py JSON)'
+                      : '支持格式: .profraw, .profdata, .info (LLVM Coverage 报告)'}
                 </Form.Text>
               </Form.Group>
 
@@ -235,7 +241,7 @@ const Upload: React.FC = () => {
                     </>
                   ) : (
                     <>
-                      <i className="fas fa-upload me-2"></i>上传报告
+                      <i className="bi bi-cloud-arrow-up me-2"></i>上传报告
                     </>
                   )}
                 </Button>
@@ -248,7 +254,7 @@ const Upload: React.FC = () => {
       {/* 使用说明 */}
       <Card className="border-0 shadow-sm mt-4">
         <Card.Header className="bg-light">
-          <h5 className="mb-0">📖 使用说明</h5>
+          <h5 className="mb-0"><i className="bi bi-book me-2"></i>使用说明</h5>
         </Card.Header>
         <Card.Body>
           <h6>Android 项目</h6>
@@ -263,6 +269,14 @@ const Upload: React.FC = () => {
             <li>在 Build Settings 中添加编译参数 <code>-fprofile-instr-generate</code></li>
             <li>运行 App 后从 Document 目录获取 .profraw 文件</li>
             <li>或使用 <code>llvm-cov</code> 转换为 .info 文件</li>
+          </ol>
+
+          <h6>Python 项目</h6>
+          <ol>
+            <li>安装 coverage.py: <code>pip install coverage</code></li>
+            <li>运行测试: <code>coverage run -m pytest</code></li>
+            <li>生成 Cobertura XML: <code>coverage xml -o coverage.xml</code></li>
+            <li>或生成 LCOV: <code>coverage lcov -o coverage.info</code></li>
           </ol>
         </Card.Body>
       </Card>

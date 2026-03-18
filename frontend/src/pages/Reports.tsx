@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { Card, Table, Badge, Button, Spinner, Alert, Form, Row, Col } from 'react-bootstrap';
+import { Card, Table, Badge, Button, Spinner, Alert, Form, Row, Col, Modal } from 'react-bootstrap';
 import { projectApi, coverageApi } from '../services/api';
 import { Project, CoverageReport } from '../types';
+import { getCoverageBadge } from '../utils/coverage';
 
 const Reports: React.FC = () => {
   const { projectId } = useParams<{ projectId: string }>();
@@ -12,6 +13,9 @@ const Reports: React.FC = () => {
   const [reports, setReports] = useState<CoverageReport[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [reportToDelete, setReportToDelete] = useState<CoverageReport | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     loadProjects();
@@ -19,10 +23,10 @@ const Reports: React.FC = () => {
 
   useEffect(() => {
     if (projectId) {
-      const project = projects.find(p => p.id === parseInt(projectId));
+      const project = projects.find(p => p.id === projectId);
       if (project) {
         setSelectedProject(project);
-        loadReports(parseInt(projectId));
+        loadReports(projectId);
       }
     } else if (projects.length > 0) {
       setSelectedProject(projects[0]);
@@ -39,7 +43,7 @@ const Reports: React.FC = () => {
     }
   };
 
-  const loadReports = async (id: number) => {
+  const loadReports = async (id: string) => {
     try {
       setLoading(true);
       const res = await coverageApi.getByProject(id);
@@ -53,7 +57,7 @@ const Reports: React.FC = () => {
   };
 
   const handleProjectChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const id = parseInt(e.target.value);
+    const id = e.target.value;
     const project = projects.find(p => p.id === id);
     if (project) {
       setSelectedProject(project);
@@ -61,15 +65,25 @@ const Reports: React.FC = () => {
     }
   };
 
-  const getCoverageColor = (coverage: number) => {
-    if (coverage >= 80) return 'success';
-    if (coverage >= 60) return 'warning';
-    return 'danger';
+  const handleDeleteClick = (report: CoverageReport) => {
+    setReportToDelete(report);
+    setShowDeleteModal(true);
   };
 
-  const getCoverageBadge = (coverage: number) => {
-    const color = getCoverageColor(coverage);
-    return <Badge bg={color}>{coverage.toFixed(1)}%</Badge>;
+  const handleConfirmDelete = async () => {
+    if (!reportToDelete) return;
+
+    try {
+      setDeleting(true);
+      await coverageApi.delete(reportToDelete.id);
+      setReports(reports.filter(r => r.id !== reportToDelete.id));
+      setShowDeleteModal(false);
+      setReportToDelete(null);
+    } catch (err) {
+      setError('删除报告失败');
+    } finally {
+      setDeleting(false);
+    }
   };
 
   return (
@@ -77,12 +91,20 @@ const Reports: React.FC = () => {
       <div className="d-flex justify-content-between align-items-center mb-4">
         <h2>覆盖率报告</h2>
         {selectedProject && (
-          <Link 
-            to={`/upload?project=${selectedProject.id}`} 
-            className="btn btn-primary"
-          >
-            上传新报告
-          </Link>
+          <div className="d-flex gap-2">
+            <Link
+              to={`/builds/${selectedProject.id}`}
+              className="btn btn-outline-secondary"
+            >
+              Builds
+            </Link>
+            <Link
+              to={`/upload?project=${selectedProject.id}`}
+              className="btn btn-primary"
+            >
+              上传新报告
+            </Link>
+          </div>
         )}
       </div>
 
@@ -111,7 +133,7 @@ const Reports: React.FC = () => {
           <Card.Header className="bg-white">
             <h5 className="mb-0">
               {selectedProject.name} 
-              <Badge bg={selectedProject.platform === 'ios' ? 'dark' : 'success'} className="ms-2">
+              <Badge bg={selectedProject.platform === 'ios' ? 'dark' : selectedProject.platform === 'python' ? 'info' : 'success'} className="ms-2">
                 {selectedProject.platform}
               </Badge>
             </h5>
@@ -138,9 +160,7 @@ const Reports: React.FC = () => {
                     <th>时间</th>
                     <th>Commit</th>
                     <th>分支</th>
-                    <th>行覆盖率</th>
-                    <th>函数覆盖率</th>
-                    <th>分支覆盖率</th>
+                    <th>来源</th>
                     <th>增量覆盖率</th>
                     <th>操作</th>
                   </tr>
@@ -158,13 +178,11 @@ const Reports: React.FC = () => {
                         <Badge bg="secondary">{report.branch}</Badge>
                       </td>
                       <td onClick={() => navigate(`/report/${report.id}`)}>
-                        {getCoverageBadge(report.lineCoverage)}
-                      </td>
-                      <td onClick={() => navigate(`/report/${report.id}`)}>
-                        {getCoverageBadge(report.functionCoverage)}
-                      </td>
-                      <td onClick={() => navigate(`/report/${report.id}`)}>
-                        {getCoverageBadge(report.branchCoverage)}
+                        {report.source === 'auto' ? (
+                          <Badge bg="info">Auto</Badge>
+                        ) : (
+                          <Badge bg="outline-secondary" className="text-secondary border">Manual</Badge>
+                        )}
                       </td>
                       <td onClick={() => navigate(`/report/${report.id}`)}>
                         {report.incrementalCoverage !== undefined ? (
@@ -174,12 +192,20 @@ const Reports: React.FC = () => {
                         )}
                       </td>
                       <td>
-                        <Button 
-                          variant="outline-primary" 
+                        <Button
+                          variant="outline-primary"
                           size="sm"
+                          className="me-2"
                           onClick={() => navigate(`/report/${report.id}`)}
                         >
-                          View Details
+                          查看详情
+                        </Button>
+                        <Button
+                          variant="outline-danger"
+                          size="sm"
+                          onClick={() => handleDeleteClick(report)}
+                        >
+                          删除
                         </Button>
                       </td>
                     </tr>
@@ -195,35 +221,66 @@ const Reports: React.FC = () => {
       {!loading && reports.length > 0 && (
         <Row className="mt-4">
           <Col md={4}>
-            <Card className="border-0 shadow-sm text-center">
-              <Card.Body>
-                <h3 className="text-primary">{reports.length}</h3>
-                <p className="text-muted mb-0">总报告数</p>
+            <Card className="text-center">
+              <Card.Body className="stat-card-custom accent-primary">
+                <div className="stat-number text-primary">{reports.length}</div>
+                <div className="stat-label">总报告数</div>
               </Card.Body>
             </Card>
           </Col>
           <Col md={4}>
-            <Card className="border-0 shadow-sm text-center">
-              <Card.Body>
-                <h3 className="text-success">
-                  {reports[0].lineCoverage.toFixed(1)}%
-                </h3>
-                <p className="text-muted mb-0">最新行覆盖率</p>
+            <Card className="text-center">
+              <Card.Body className="stat-card-custom accent-success">
+                <div className="stat-number text-success">
+                  {reports[0].incrementalCoverage !== undefined
+                    ? `${reports[0].incrementalCoverage.toFixed(1)}%`
+                    : '-'}
+                </div>
+                <div className="stat-label">最新增量覆盖率</div>
               </Card.Body>
             </Card>
           </Col>
           <Col md={4}>
-            <Card className="border-0 shadow-sm text-center">
-              <Card.Body>
-                <h3 className="text-info">
+            <Card className="text-center">
+              <Card.Body className="stat-card-custom accent-info">
+                <div className="stat-number text-info">
                   {new Set(reports.map(r => r.branch)).size}
-                </h3>
-                <p className="text-muted mb-0">分支数</p>
+                </div>
+                <div className="stat-label">分支数</div>
               </Card.Body>
             </Card>
           </Col>
         </Row>
       )}
+
+      {/* 删除确认对话框 */}
+      <Modal show={showDeleteModal} onHide={() => setShowDeleteModal(false)}>
+        <Modal.Header closeButton>
+          <Modal.Title>确认删除</Modal.Title>
+        </Modal.Header>
+        <Modal.Body>
+          {reportToDelete && (
+            <>
+              <p>确定要删除以下覆盖率报告吗？</p>
+              <ul className="list-unstyled">
+                <li><strong>时间:</strong> {new Date(reportToDelete.createdAt).toLocaleString()}</li>
+                <li><strong>Commit:</strong> <code>{reportToDelete.commitHash.substring(0, 7)}</code></li>
+                <li><strong>分支:</strong> {reportToDelete.branch}</li>
+                <li><strong>增量覆盖率:</strong> {reportToDelete.incrementalCoverage !== undefined ? `${reportToDelete.incrementalCoverage.toFixed(1)}%` : '-'}</li>
+              </ul>
+              <p className="text-danger mb-0">此操作不可恢复！</p>
+            </>
+          )}
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="secondary" onClick={() => setShowDeleteModal(false)} disabled={deleting}>
+            取消
+          </Button>
+          <Button variant="danger" onClick={handleConfirmDelete} disabled={deleting}>
+            {deleting ? '删除中...' : '确认删除'}
+          </Button>
+        </Modal.Footer>
+      </Modal>
     </div>
   );
 };

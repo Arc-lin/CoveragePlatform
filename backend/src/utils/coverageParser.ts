@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { parseStringPromise } from 'xml2js';
+import { parseCoberturaXML, parseCoverageJSON, isCoberturaFormat, getReportFilesCobertura, getFileLineCoverageCobertura } from './coberturaParser';
 
 interface CoverageData {
   lineCoverage: number;
@@ -29,14 +30,11 @@ export async function parseAndroidCoverage(
       return parseJaCoCoXML(filePath);
     case '.exec':
     case '.ec':
-      // JaCoCo 二进制文件需要配合类文件解析，这里返回占位数据
-      // 实际使用时需要通过 JaCoCo CLI 转换为 XML
-      return {
-        lineCoverage: 0,
-        functionCoverage: 0,
-        branchCoverage: 0,
-        files: []
-      };
+      throw new Error(
+        'JaCoCo binary format (.ec/.exec) is not directly supported. ' +
+        'Please convert to XML first using: ' +
+        'java -jar jacococli.jar report <exec-file> --classfiles <class-dir> --xml <output.xml>'
+      );
     case '.info':
       return parseLCOV(filePath);
     default:
@@ -54,18 +52,40 @@ export async function parseIOSCoverage(
   switch (fileExt) {
     case '.profraw':
     case '.profdata':
-      // LLVM Profile 数据需要配合二进制文件解析
-      // 实际使用时需要通过 llvm-cov 转换为 lcov
-      return {
-        lineCoverage: 0,
-        functionCoverage: 0,
-        branchCoverage: 0,
-        files: []
-      };
+      throw new Error(
+        'LLVM raw profile (.profraw/.profdata) is not directly supported. ' +
+        'Please convert to LCOV first using: ' +
+        'xcrun llvm-cov export -format=lcov -instr-profile <profdata-file> <binary> > coverage.info'
+      );
     case '.info':
       return parseLCOV(filePath);
     default:
       throw new Error(`Unsupported iOS coverage file format: ${fileExt}`);
+  }
+}
+
+/**
+ * 解析 Python 覆盖率数据 (coverage.py)
+ */
+export async function parsePythonCoverage(
+  filePath: string,
+  fileExt: string
+): Promise<CoverageData> {
+  switch (fileExt) {
+    case '.xml':
+      return parseCoberturaXML(filePath);
+    case '.info':
+      return parseLCOV(filePath);
+    case '.json':
+      return parseCoverageJSON(filePath);
+    case '.coverage':
+      throw new Error(
+        'Python .coverage binary format is not directly supported. ' +
+        'Please convert first using: coverage xml -o coverage.xml ' +
+        'or: coverage lcov -o coverage.info'
+      );
+    default:
+      throw new Error(`Unsupported Python coverage file format: ${fileExt}`);
   }
 }
 
@@ -206,6 +226,9 @@ function parseLCOV(filePath: string): CoverageData {
     if (line.startsWith('SF:')) {
       // Source File
       if (currentFile) {
+        currentFile.lineCoverage = currentFile.totalLines > 0
+          ? parseFloat(((currentFile.coveredLines / currentFile.totalLines) * 100).toFixed(2))
+          : 0;
         files.push(currentFile);
       }
       currentFile = {
@@ -320,17 +343,148 @@ export function calculateIncrementalCoverage(
 }
 
 /**
+ * 检测报告文件格式
+ */
+function detectReportFormat(reportPath: string): 'lcov' | 'jacoco' | 'cobertura' | 'json' {
+  if (reportPath.endsWith('.info')) return 'lcov';
+  if (reportPath.endsWith('.json')) return 'json';
+  try {
+    const head = fs.readFileSync(reportPath, 'utf-8').substring(0, 500);
+    if (head.includes('SF:') && head.includes('DA:')) return 'lcov';
+    if (head.includes('<coverage')) return 'cobertura';
+    if (head.includes('<report')) return 'jacoco';
+    return 'cobertura'; // 默认 XML 为 Cobertura
+  } catch {
+    return 'lcov';
+  }
+}
+
+/**
  * 获取文件的行级覆盖率详情
  * 用于前端代码展示，标记覆盖/未覆盖的行
  */
 export async function getFileLineCoverage(
   reportPath: string,
-  targetFile: string
+  targetFile: string,
+  changedLines?: number[]  // 可选：变更行号列表，用于标记变更行
 ): Promise<{
   filePath: string;
   lines: {
     lineNumber: number;
     isCovered: boolean;
+    isChanged: boolean;  // 是否为变更行
+    missedInstructions: number;
+    coveredInstructions: number;
+  }[];
+} | null> {
+  const format = detectReportFormat(reportPath);
+  if (format === 'lcov') {
+    return getFileLineCoverageLCOV(reportPath, targetFile, changedLines);
+  }
+  if (format === 'cobertura') {
+    return getFileLineCoverageCobertura(reportPath, targetFile, changedLines);
+  }
+  return getFileLineCoverageXML(reportPath, targetFile, changedLines);
+}
+
+/**
+ * LCOV 格式：获取文件的行级覆盖率详情
+ */
+function getFileLineCoverageLCOV(
+  reportPath: string,
+  targetFile: string,
+  changedLines?: number[]
+): {
+  filePath: string;
+  lines: {
+    lineNumber: number;
+    isCovered: boolean;
+    isChanged: boolean;
+    missedInstructions: number;
+    coveredInstructions: number;
+  }[];
+} | null {
+  try {
+    const content = fs.readFileSync(reportPath, 'utf-8');
+    const lines = content.split('\n');
+
+    let currentFile: string | null = null;
+    let lineDetails: { lineNumber: number; isCovered: boolean; isChanged: boolean; missedInstructions: number; coveredInstructions: number }[] = [];
+    let matched = false;
+
+    for (const line of lines) {
+      if (line.startsWith('SF:')) {
+        // 如果上一个文件匹配，返回结果
+        if (matched && currentFile) {
+          return { filePath: currentFile, lines: lineDetails };
+        }
+        currentFile = line.substring(3);
+        lineDetails = [];
+        // 匹配逻辑：文件名后缀匹配
+        matched = matchFilePath(currentFile, targetFile);
+      } else if (line.startsWith('DA:') && matched) {
+        const parts = line.substring(3).split(',');
+        const lineNumber = parseInt(parts[0]);
+        const hitCount = parseInt(parts[1]);
+        lineDetails.push({
+          lineNumber,
+          isCovered: hitCount > 0,
+          isChanged: changedLines ? changedLines.includes(lineNumber) : false,
+          missedInstructions: hitCount > 0 ? 0 : 1,
+          coveredInstructions: hitCount > 0 ? hitCount : 0
+        });
+      } else if (line === 'end_of_record' && matched && currentFile) {
+        return { filePath: currentFile, lines: lineDetails };
+      }
+    }
+
+    // 文件末尾没有 end_of_record 的情况
+    if (matched && currentFile) {
+      return { filePath: currentFile, lines: lineDetails };
+    }
+
+    return null;
+  } catch (error) {
+    console.error('Error parsing LCOV coverage file:', error);
+    return null;
+  }
+}
+
+/**
+ * 文件路径匹配辅助函数
+ */
+function matchFilePath(filePath: string, targetFile: string): boolean {
+  // 标准化路径分隔符
+  const normalizedFile = filePath.replace(/\\/g, '/');
+  const normalizedTarget = targetFile.replace(/\\/g, '/');
+
+  // 精确匹配
+  if (normalizedFile === normalizedTarget) return true;
+
+  // 后缀匹配：确保在路径分隔符边界上匹配，避免 StudentDetailViewController.m 匹配 ViewController.m
+  if (normalizedFile.endsWith('/' + normalizedTarget) || normalizedTarget.endsWith('/' + normalizedFile)) return true;
+
+  // 文件名完全相同且路径兼容
+  const fileName = path.basename(normalizedFile);
+  const targetFileName = path.basename(normalizedTarget);
+  if (fileName === targetFileName) return true;
+
+  return false;
+}
+
+/**
+ * JaCoCo XML 格式：获取文件的行级覆盖率详情
+ */
+async function getFileLineCoverageXML(
+  reportPath: string,
+  targetFile: string,
+  changedLines?: number[]
+): Promise<{
+  filePath: string;
+  lines: {
+    lineNumber: number;
+    isCovered: boolean;
+    isChanged: boolean;
     missedInstructions: number;
     coveredInstructions: number;
   }[];
@@ -338,31 +492,35 @@ export async function getFileLineCoverage(
   try {
     const xmlContent = fs.readFileSync(reportPath, 'utf-8');
     const result = await parseStringPromise(xmlContent);
-    
+
     const report = result.report;
     if (!report) return null;
 
     // 遍历所有包查找目标文件
     const packages = report.package || [];
-    
+
     for (const pkg of packages) {
       const sourcefiles = pkg.sourcefile || [];
-      
+
       for (const sourcefile of sourcefiles) {
         const fileName = sourcefile.$.name;
         const pkgName = pkg.$.name;
         const fullPath = `${pkgName}/${fileName}`;
-        
+
         // 匹配文件路径
         if (fullPath.endsWith(targetFile) || targetFile.endsWith(fileName)) {
           const lines = sourcefile.line || [];
-          const lineDetails = lines.map((line: any) => ({
-            lineNumber: parseInt(line.$.nr),
-            isCovered: parseInt(line.$.ci || 0) > 0,
-            missedInstructions: parseInt(line.$.mi || 0),
-            coveredInstructions: parseInt(line.$.ci || 0)
-          }));
-          
+          const lineDetails = lines.map((line: any) => {
+            const lineNumber = parseInt(line.$.nr);
+            return {
+              lineNumber,
+              isCovered: parseInt(line.$.ci || 0) > 0,
+              isChanged: changedLines ? changedLines.includes(lineNumber) : false,
+              missedInstructions: parseInt(line.$.mi || 0),
+              coveredInstructions: parseInt(line.$.ci || 0)
+            };
+          });
+
           return {
             filePath: fullPath,
             lines: lineDetails
@@ -370,7 +528,7 @@ export async function getFileLineCoverage(
         }
       }
     }
-    
+
     return null;
   } catch (error) {
     console.error('Error parsing coverage file:', error);
@@ -382,6 +540,78 @@ export async function getFileLineCoverage(
  * 获取报告中所有文件的列表
  */
 export async function getReportFiles(
+  reportPath: string
+): Promise<{
+  filePath: string;
+  lineCoverage: number;
+  totalLines: number;
+  coveredLines: number;
+}[]> {
+  const format = detectReportFormat(reportPath);
+  if (format === 'lcov') {
+    return getReportFilesLCOV(reportPath);
+  }
+  if (format === 'cobertura') {
+    return getReportFilesCobertura(reportPath);
+  }
+  return getReportFilesXML(reportPath);
+}
+
+/**
+ * LCOV 格式：获取报告中所有文件的列表
+ */
+function getReportFilesLCOV(reportPath: string): {
+  filePath: string;
+  lineCoverage: number;
+  totalLines: number;
+  coveredLines: number;
+}[] {
+  try {
+    const content = fs.readFileSync(reportPath, 'utf-8');
+    const lines = content.split('\n');
+
+    const files: { filePath: string; lineCoverage: number; totalLines: number; coveredLines: number }[] = [];
+    let currentFile: string | null = null;
+    let totalLines = 0;
+    let coveredLines = 0;
+
+    for (const line of lines) {
+      if (line.startsWith('SF:')) {
+        // 保存上一个文件
+        if (currentFile) {
+          const cov = totalLines > 0 ? parseFloat(((coveredLines / totalLines) * 100).toFixed(2)) : 0;
+          files.push({ filePath: currentFile, lineCoverage: cov, totalLines, coveredLines });
+        }
+        currentFile = line.substring(3);
+        totalLines = 0;
+        coveredLines = 0;
+      } else if (line.startsWith('DA:')) {
+        const parts = line.substring(3).split(',');
+        const hitCount = parseInt(parts[1]);
+        totalLines++;
+        if (hitCount > 0) coveredLines++;
+      } else if (line === 'end_of_record' || line.trim() === '') {
+        // end_of_record 时也保存（但等 SF: 或文件末尾统一处理也行）
+      }
+    }
+
+    // 保存最后一个文件
+    if (currentFile) {
+      const cov = totalLines > 0 ? parseFloat(((coveredLines / totalLines) * 100).toFixed(2)) : 0;
+      files.push({ filePath: currentFile, lineCoverage: cov, totalLines, coveredLines });
+    }
+
+    return files;
+  } catch (error) {
+    console.error('Error parsing LCOV report files:', error);
+    return [];
+  }
+}
+
+/**
+ * JaCoCo XML 格式：获取报告中所有文件的列表
+ */
+async function getReportFilesXML(
   reportPath: string
 ): Promise<{
   filePath: string;
@@ -446,6 +676,7 @@ export async function getReportFiles(
 export default {
   parseAndroidCoverage,
   parseIOSCoverage,
+  parsePythonCoverage,
   calculateIncrementalCoverage,
   getFileLineCoverage,
   getReportFiles
@@ -540,11 +771,20 @@ export async function getIncrementalFiles(
   const incrementalFiles = diffFiles
     .map(diffFile => {
       // 在覆盖率报告中查找匹配的文件
-      const coverageFile = allFiles.find(f => 
-        f.filePath.endsWith(diffFile.filePath) ||
-        diffFile.filePath.endsWith(f.filePath) ||
-        f.filePath.replace(/\//g, '.').endsWith(diffFile.filePath.replace(/\//g, '.'))
-      );
+      // 使用路径分隔符边界匹配，避免 test_calculator.py 匹配 calculator.py
+      const coverageFile = allFiles.find(f => {
+        if (f.filePath === diffFile.filePath) return true;
+        // 检查 endsWith 时确保边界是路径分隔符
+        if (diffFile.filePath.endsWith('/' + f.filePath)) return true;
+        if (f.filePath.endsWith('/' + diffFile.filePath)) return true;
+        // 仅当文件名完全相同时才匹配（basename 匹配）
+        const fBasename = f.filePath.split('/').pop();
+        const diffBasename = diffFile.filePath.split('/').pop();
+        if (fBasename === diffBasename) return true;
+        // Android JaCoCo 包路径匹配（com/example/Foo.java → com.example.Foo）
+        if (f.filePath.replace(/\//g, '.').endsWith(diffFile.filePath.replace(/\//g, '.'))) return true;
+        return false;
+      });
       
       if (!coverageFile) {
         return null;

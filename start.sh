@@ -31,6 +31,12 @@ print_warn() {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# 可通过环境变量覆盖的端口配置
+BACKEND_PORT="${BACKEND_PORT:-3001}"
+FRONTEND_PORT="${FRONTEND_PORT:-3000}"
+# HOST 配置：设置后支持局域网访问，例如 HOST=192.168.0.100 ./start.sh
+HOST="${HOST:-localhost}"
+
 start_backend() {
     print_info "Starting Backend Server..."
     cd "$SCRIPT_DIR/backend"
@@ -42,10 +48,10 @@ start_backend() {
     fi
     
     # 启动服务
-    npm run dev &
+    PORT=$BACKEND_PORT npm run dev &
     BACKEND_PID=$!
     echo $BACKEND_PID > /tmp/coverage-backend.pid
-    print_success "Backend started on http://localhost:3001 (PID: $BACKEND_PID)"
+    print_success "Backend started on http://$HOST:$BACKEND_PORT (PID: $BACKEND_PID)"
 }
 
 start_frontend() {
@@ -58,11 +64,15 @@ start_frontend() {
         npm install --legacy-peer-deps
     fi
     
-    # 启动应用
-    npm start &
+    # 启动应用（局域网模式下设置 API 地址和绑定地址）
+    if [ "$HOST" != "localhost" ]; then
+        REACT_APP_API_URL="http://$HOST:$BACKEND_PORT/api" HOST=0.0.0.0 BROWSER=none PORT=$FRONTEND_PORT npm start &
+    else
+        PORT=$FRONTEND_PORT npm start &
+    fi
     FRONTEND_PID=$!
     echo $FRONTEND_PID > /tmp/coverage-frontend.pid
-    print_success "Frontend started on http://localhost:3000 (PID: $FRONTEND_PID)"
+    print_success "Frontend started on http://$HOST:$FRONTEND_PORT (PID: $FRONTEND_PID)"
 }
 
 stop_all() {
@@ -97,9 +107,11 @@ show_help() {
     echo "  help        显示帮助信息"
     echo ""
     echo "示例:"
-    echo "  ./start.sh all     # 启动完整平台"
-    echo "  ./start.sh backend # 只启动后端"
-    echo "  ./start.sh stop    # 停止所有服务"
+    echo "  ./start.sh all                       # 启动完整平台"
+    echo "  ./start.sh backend                   # 只启动后端"
+    echo "  ./start.sh stop                      # 停止所有服务"
+    echo "  HOST=192.168.0.100 ./start.sh all    # 局域网模式启动"
+    echo "  BACKEND_PORT=4001 ./start.sh all     # 自定义端口"
 }
 
 check_status() {
@@ -108,14 +120,14 @@ check_status() {
     
     if [ -f /tmp/coverage-backend.pid ] && kill -0 $(cat /tmp/coverage-backend.pid) 2>/dev/null; then
         print_success "Backend: Running (PID: $(cat /tmp/coverage-backend.pid))"
-        echo "  URL: http://localhost:3001"
+        echo "  URL: http://$HOST:$BACKEND_PORT"
     else
         print_error "Backend: Stopped"
     fi
-    
+
     if [ -f /tmp/coverage-frontend.pid ] && kill -0 $(cat /tmp/coverage-frontend.pid) 2>/dev/null; then
         print_success "Frontend: Running (PID: $(cat /tmp/coverage-frontend.pid))"
-        echo "  URL: http://localhost:3000"
+        echo "  URL: http://$HOST:$FRONTEND_PORT"
     else
         print_error "Frontend: Stopped"
     fi
@@ -142,8 +154,8 @@ case "${1:-all}" in
         print_success "=================================="
         print_success "Platform is running!"
         print_success "=================================="
-        print_info "Backend:  http://localhost:3001"
-        print_info "Frontend: http://localhost:3000"
+        print_info "Backend:  http://$HOST:$BACKEND_PORT"
+        print_info "Frontend: http://$HOST:$FRONTEND_PORT"
         print_info ""
         print_info "Press Ctrl+C to stop all services"
         wait
