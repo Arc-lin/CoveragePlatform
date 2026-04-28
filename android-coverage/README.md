@@ -77,7 +77,7 @@ dependencies {
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
 }
 
-task jacocoTestReport(type: JacocoReport, dependsOn: ['testDebugUnitTest']) {
+task jacocoUnitTestReport(type: JacocoReport, dependsOn: ['testDebugUnitTest']) {
     reports {
         xml.required = true
         html.required = true
@@ -120,7 +120,9 @@ class MyApplication : Application() {
         CoverageCollector.init(
             application = this,
             uploadConfig = CoverageUploader.UploadConfig(
-                baseUrl = "http://coverage-platform.internal",
+                // ⚠️ Android 9+ 默认禁止明文 HTTP，生产环境请使用 https://
+                // 内网使用 http:// 需在 network_security_config.xml 中配置 cleartextTrafficPermitted
+                baseUrl = "https://coverage-platform.internal",
                 projectId = "android-app",
                 apiKey = "your-api-key"  // 可选
             ),
@@ -183,8 +185,8 @@ CoverageCollector.updateGitInfo(
 // 初始化时配置上传
 CoverageCollector.init(
     application = this,
-    uploadConfig = UploadConfig(baseUrl = "http://...", projectId = "..."),
-    gitInfo = GitInfo(commitHash = "...", branch = "...")
+    uploadConfig = CoverageUploader.UploadConfig(baseUrl = "http://...", projectId = "..."),
+    gitInfo = CoverageCollector.GitInfo(commitHash = "...", branch = "...")
 )
 // 之后 App 进入后台时自动 dump + 上传
 ```
@@ -192,16 +194,19 @@ CoverageCollector.init(
 ### 手动上传
 
 ```kotlin
-// 方式1：手动 dump（会自动上传）
+// 方式1：手动 dump（内部异步上传，结果不可直接获取；如需感知上传结果请用方式2）
 CoverageCollector.dumpCoverage(context)
 
 // 方式2：手动上传已有文件
 lifecycleScope.launch {
-    val result = CoverageCollector.uploadCoverage(
-        coverageFile = CoverageCollector.getLatestCoverageFile(context)!!,
-        commitHash = "abc123",
-        branch = "main"
-    )
+    val latestFile = CoverageCollector.getLatestCoverageFile(context)
+    if (latestFile != null) {
+        val result = CoverageCollector.uploadCoverage(
+            coverageFile = latestFile,
+            commitHash = "abc123",
+            branch = "main"
+        )
+    }
 }
 ```
 
@@ -234,8 +239,8 @@ adb shell run-as <package_name> cat files/coverage/coverage_xxx.ec > coverage.ec
 ### 1. 生成 JaCoCo XML 报告
 
 ```bash
-./gradlew jacocoTestReport
-# 报告位置: app/build/reports/jacoco/jacocoTestReport/jacocoTestReport.xml
+./gradlew jacocoUnitTestReport
+# 报告位置: app/build/reports/jacoco/unitTest/report.xml
 ```
 
 ### 2. 获取 Git Diff
@@ -248,7 +253,7 @@ git diff <old_commit> <new_commit> --unified=0 > diff.patch
 
 ```bash
 python incremental_coverage.py \
-    --jacoco-report app/build/reports/jacoco/jacocoTestReport/jacocoTestReport.xml \
+    --jacoco-report app/build/reports/jacoco/unitTest/report.xml \
     --diff-file diff.patch \
     --output incremental-report.json \
     --old-commit abc123 \
@@ -302,8 +307,10 @@ CoverageCollector.dumpCoverage(
     autoUpload: Boolean? = null            // 是否自动上传
 ): String?
 
-// 手动上传
-CoverageCollector.uploadCoverage(
+// 手动上传（suspend 函数，需在协程中调用；@JvmStatic，Java 不可直接调用）
+// Kotlin 调用: lifecycleScope.launch { CoverageCollector.uploadCoverage(...) }
+@JvmStatic
+suspend fun uploadCoverage(
     coverageFile: File,
     commitHash: String? = null,
     branch: String? = null
@@ -331,23 +338,23 @@ UploadConfig(
     apiKey: String? = null  // API 密钥（可选）
 )
 
-// 上传单个文件
-CoverageUploader.getInstance().uploadCoverage(
+// 上传单个文件（suspend 函数，需在协程中调用）
+suspend fun uploadCoverage(
     coverageFile: File,
     commitHash: String,
     branch: String,
     metadata: Map<String, String> = emptyMap()
 ): UploadResult
 
-// 批量上传
-CoverageUploader.getInstance().uploadMultiple(
+// 批量上传（suspend 函数，需在协程中调用）
+suspend fun uploadMultiple(
     coverageFiles: List<File>,
     commitHash: String,
     branch: String
 ): List<UploadResult>
 
-// 上传 JSON 报告
-CoverageUploader.getInstance().uploadReport(
+// 上传 JSON 报告（suspend 函数，需在协程中调用）
+suspend fun uploadReport(
     reportFile: File,
     commitHash: String,
     branch: String

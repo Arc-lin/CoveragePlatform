@@ -137,7 +137,7 @@ def match_file_path(diff_path: str, jacoco_path: str) -> bool:
     jacoco_name = get_file_name(jacoco_path)
 
     # 只有文件名相同且路径包含相同包名时才匹配
-    if diff_name == jacaco_name:
+    if diff_name == jacoco_name:
         # 提取包名部分进行匹配
         diff_parts = diff_normalized.split('/')
         jacoco_parts = jacoco_normalized.split('/')
@@ -413,7 +413,7 @@ def generate_report(
             "overall_coverage_percent": round(overall_coverage, 2),
             "threshold": 80.0,
             "status": "PASS" if overall_coverage >= 80 else "FAIL",
-            "check_time": str(Path(output_path).stat().st_mtime if Path(output_path).exists() else "")
+            "check_time": ""
         },
         "files": [r.to_dict() for r in results],
         "generated_at": str(Path('.').resolve())
@@ -546,10 +546,11 @@ def main():
         args.new_commit
     )
 
-    # 更新阈值状态
-    if report['summary']['overall_coverage_percent'] < args.threshold:
-        report['summary']['status'] = 'FAIL'
-        report['summary']['threshold'] = args.threshold
+    # 更新阈值状态（使用命令行传入的阈值重新判断并写回文件）
+    report['summary']['threshold'] = args.threshold
+    report['summary']['status'] = 'PASS' if report['summary']['overall_coverage_percent'] >= args.threshold else 'FAIL'
+    with open(args.output, 'w', encoding='utf-8') as f:
+        json.dump(report, f, indent=2, ensure_ascii=False)
 
     print_summary(report)
     print(f"\n详细报告已保存至: {args.output}")
