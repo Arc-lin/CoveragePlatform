@@ -4,12 +4,39 @@
 
 Android 端采用 **JaCoCo (Java Code Coverage)** 进行代码覆盖率统计，配合 Git Diff 实现增量覆盖率分析。
 
-## 核心原理
+**核心特性：**
+- ✅ 自动收集覆盖率数据（App 进入后台/退出时）
+- ✅ 自动上传到覆盖率平台
+- ✅ 增量覆盖率分析（只统计变更代码）
+- ✅ 时间间隔保护（防止频繁 dump）
 
-1. **编译时插桩**: JaCoCo 在编译期间对字节码进行插桩，插入探针代码
-2. **运行时收集**: 运行时探针记录代码执行路径
-3. **数据导出**: 测试结束后生成 `.exec` 覆盖率数据文件
-4. **报告生成**: 使用 JaCoCo CLI 或 Gradle 插件生成 HTML/XML/CSV 报告
+## 整体流程
+
+```
+┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+│ 编译时插桩   │ -> │ 运行时收集   │ -> │ 自动保存     │ -> │ 自动上传     │
+│ (JaCoCo)    │    │ (探针记录)   │    │ (.ec 文件)  │    │ (平台)      │
+└─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘
+                                            ↓
+                              ┌─────────────────────────────┐
+                              │   CI 流程：                  │
+                              │   1. 生成 JaCoCo XML 报告    │
+                              │   2. 获取 Git Diff           │
+                              │   3. 增量覆盖率分析          │
+                              │   4. 输出报告                │
+                              └─────────────────────────────┘
+```
+
+## 文件说明
+
+| 文件 | 说明 |
+|------|------|
+| `CoverageCollector.kt` | 覆盖率数据收集器，支持自动上传 |
+| `CoverageUploader.kt` | 覆盖率数据上传器，使用 OkHttp |
+| `incremental_coverage.py` | Python 增量覆盖率分析工具 |
+| `build.gradle.example` | Gradle 配置示例 |
+
+---
 
 ## 集成步骤
 
@@ -33,11 +60,9 @@ plugins {
 }
 
 android {
-    // ... 其他配置
-    
     buildTypes {
         debug {
-            testCoverageEnabled true  // 关键：开启覆盖率
+            testCoverageEnabled true  // ⚠️ 关键：开启覆盖率
         }
     }
 }
@@ -46,12 +71,18 @@ jacoco {
     toolVersion = "0.8.11"
 }
 
+dependencies {
+    // CoverageUploader 依赖
+    implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
+}
+
 task jacocoTestReport(type: JacocoReport, dependsOn: ['testDebugUnitTest']) {
     reports {
         xml.required = true
         html.required = true
     }
-    
+
     def fileFilter = [
         '**/R.class',
         '**/R$*.class',
@@ -60,12 +91,12 @@ task jacocoTestReport(type: JacocoReport, dependsOn: ['testDebugUnitTest']) {
         '**/*Test*.*',
         'android/**/*.*'
     ]
-    
-    def debugTree = fileTree(dir: "${buildDir}/intermediates/javac/debug", 
+
+    def debugTree = fileTree(dir: "${buildDir}/intermediates/javac/debug",
                              excludes: fileFilter)
-    def kotlinDebugTree = fileTree(dir: "${buildDir}/tmp/kotlin-classes/debug", 
+    def kotlinDebugTree = fileTree(dir: "${buildDir}/tmp/kotlin-classes/debug",
                                    excludes: fileFilter)
-    
+
     classDirectories.setFrom(files([debugTree], [kotlinDebugTree]))
     sourceDirectories.setFrom(files([
         "src/main/java",
@@ -78,193 +109,345 @@ task jacocoTestReport(type: JacocoReport, dependsOn: ['testDebugUnitTest']) {
 }
 ```
 
-
-### 3. 在 Application 中初始化
+### 3. Application 初始化
 
 ```kotlin
 class MyApplication : Application() {
     override fun onCreate() {
         super.onCreate()
-        CoverageCollector.init(this)
+
+        // 初始化覆盖率收集器（支持自动上传）
+        CoverageCollector.init(
+            application = this,
+            uploadConfig = CoverageUploader.UploadConfig(
+                baseUrl = "http://coverage-platform.internal",
+                projectId = "android-app",
+                apiKey = "your-api-key"  // 可选
+            ),
+            gitInfo = CoverageCollector.GitInfo(
+                commitHash = BuildConfig.GIT_COMMIT_HASH,  // 建议从 CI 环境变量注入
+                branch = BuildConfig.GIT_BRANCH
+            )
+        )
     }
 }
 ```
+
+**Git 信息获取方式：**
+
+在 `build.gradle` 中通过 `buildConfigField` 注入：
+
+```gradle
+android {
+    defaultConfig {
+        // 从 CI 环境变量获取 Git 信息
+        def gitCommitHash = System.getenv("GIT_COMMIT_HASH") ?: "unknown"
+        def gitBranch = System.getenv("GIT_BRANCH") ?: "unknown"
+
+        buildConfigField "String", "GIT_COMMIT_HASH", "\"$gitCommitHash\""
+        buildConfigField "String", "GIT_BRANCH", "\"$gitBranch\""
+    }
+}
+```
+
+CI 配置示例（Jenkins）：
+
+```groovy
+environment {
+    GIT_COMMIT_HASH = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
+    GIT_BRANCH = sh(returnStdout: true, script: 'git rev-parse --abbrev-ref HEAD').trim()
+}
+```
+
+### 4. 运行时更新 Git 信息（可选）
+
+如果在初始化时无法获取 Git 信息，可以在运行时更新：
+
+```kotlin
+// 从 CI 环境变量或其他来源获取后更新
+CoverageCollector.updateGitInfo(
+    commitHash = "abc123",
+    branch = "main"
+)
+```
+
+---
+
+## 数据上传
+
+### 自动上传
+
+配置了 `uploadConfig` 后，CoverageCollector 会自动上传：
+
+```kotlin
+// 初始化时配置上传
+CoverageCollector.init(
+    application = this,
+    uploadConfig = UploadConfig(baseUrl = "http://...", projectId = "..."),
+    gitInfo = GitInfo(commitHash = "...", branch = "...")
+)
+// 之后 App 进入后台时自动 dump + 上传
+```
+
+### 手动上传
+
+```kotlin
+// 方式1：手动 dump（会自动上传）
+CoverageCollector.dumpCoverage(context)
+
+// 方式2：手动上传已有文件
+lifecycleScope.launch {
+    val result = CoverageCollector.uploadCoverage(
+        coverageFile = CoverageCollector.getLatestCoverageFile(context)!!,
+        commitHash = "abc123",
+        branch = "main"
+    )
+}
+```
+
+### 获取覆盖率文件路径
+
+覆盖率文件保存在 App 私有目录：
+
+```kotlin
+// 获取目录路径
+val dir = CoverageCollector.getCoverageDirPath(context)
+// 输出: /data/data/<package_name>/files/coverage
+
+// 获取所有文件
+val files = CoverageCollector.getCoverageFiles(context)
+
+// 获取最新文件
+val latest = CoverageCollector.getLatestCoverageFile(context)
+```
+
+通过 adb 提取：
+
+```bash
+adb shell run-as <package_name> cat files/coverage/coverage_xxx.ec > coverage.ec
+```
+
+---
 
 ## 增量覆盖率分析
 
-### 1. 获取 Git Diff
+### 1. 生成 JaCoCo XML 报告
 
 ```bash
-git diff <old-commit> <new-commit> --unified=0 > diff.patch
-```
-
-### 2. 解析 Diff 获取变更文件和行号
-
-```kotlin
-// DiffParser.kt
-object DiffParser {
-    
-    data class FileChange(
-        val filePath: String,
-        val changedLines: List<Int>
-    )
-    
-    fun parseDiff(diffContent: String): List<FileChange> {
-        val changes = mutableListOf<FileChange>()
-        var currentFile: String? = null
-        val currentLines = mutableListOf<Int>()
-        
-        diffContent.lines().forEach { line ->
-            when {
-                line.startsWith("diff --git") -> {
-                    currentFile?.let {
-                        changes.add(FileChange(it, currentLines.toList()))
-                    }
-                    currentLines.clear()
-                }
-                line.startsWith("+++ b/") -> {
-                    currentFile = line.substringAfter("+++ b/")
-                }
-                line.startsWith("@@") -> {
-                    // 解析 @@ 行，提取变更行号
-                    // 格式: @@ -oldStart,oldCount +newStart,newCount @@
-                    val matchResult = Regex("@@[^+]+\\+(\\\\d+),?(\\\\d*) @@")
-                        .find(line)
-                    matchResult?.let {
-                        val startLine = it.groupValues[1].toInt()
-                        val lineCount = it.groupValues[2].toIntOrNull() ?: 1
-                        for (i in 0 until lineCount) {
-                            currentLines.add(startLine + i)
-                        }
-                    }
-                }
-            }
-        }
-        
-        currentFile?.let {
-            changes.add(FileChange(it, currentLines.toList()))
-        }
-        
-        return changes
-    }
-}
-```
-
-### 3. 结合 JaCoCo 报告计算增量覆盖率
-
-```kotlin
-// IncrementalCoverageAnalyzer.kt
-import org.jacoco.core.analysis.*
-import org.jacoco.core.data.ExecutionDataStore
-import org.jacoco.core.tools.ExecFileLoader
-import java.io.File
-
-class IncrementalCoverageAnalyzer {
-    
-    data class CoverageResult(
-        val filePath: String,
-        val totalLines: Int,
-        val coveredLines: Int,
-        val coveragePercent: Double
-    )
-    
-    fun analyzeIncrementalCoverage(
-        execFile: File,
-        classFiles: List<File>,
-        sourceFiles: List<File>,
-        fileChanges: List<DiffParser.FileChange>
-    ): List<CoverageResult> {
-        // 加载执行数据
-        val loader = ExecFileLoader()
-        loader.load(execFile)
-        
-        val executionData = loader.executionDataStore
-        val coverageBuilder = CoverageBuilder()
-        val analyzer = Analyzer(executionData, coverageBuilder)
-        
-        // 分析类文件
-        classFiles.forEach { classFile ->
-            analyzer.analyzeAll(classFile)
-        }
-        
-        val results = mutableListOf<CoverageResult>()
-        
-        // 筛选增量文件的覆盖率
-        fileChanges.forEach { change ->
-            val bundle = coverageBuilder.getBundle("Coverage")
-            
-            bundle.packages.forEach { packageNode ->
-                packageNode.sourceFiles.forEach { sourceFile ->
-                    if (sourceFile.name == File(change.filePath).name) {
-                        val coveredLines = mutableListOf<Int>()
-                        val uncoveredLines = mutableListOf<Int>()
-                        
-                        change.changedLines.forEach { lineNum ->
-                            val line = sourceFile.getLine(lineNum)
-                            when {
-                                line.isCovered -> coveredLines.add(lineNum)
-                                line.isMissed -> uncoveredLines.add(lineNum)
-                            }
-                        }
-                        
-                        val total = change.changedLines.size
-                        val covered = coveredLines.size
-                        val percent = if (total > 0) (covered * 100.0 / total) else 0.0
-                        
-                        results.add(CoverageResult(
-                            filePath = change.filePath,
-                            totalLines = total,
-                            coveredLines = covered,
-                            coveragePercent = percent
-                        ))
-                    }
-                }
-            }
-        }
-        
-        return results
-    }
-}
-```
-
-## 报告生成脚本
-
-```bash
-#!/bin/bash
-# coverage_report.sh
-
-EXEC_FILE=$1
-OLD_COMMIT=$2
-NEW_COMMIT=$3
-
-# 1. 生成全量覆盖率报告
 ./gradlew jacocoTestReport
-
-# 2. 获取 Git Diff
-git diff $OLD_COMMIT $NEW_COMMIT --unified=0 > diff.patch
-
-# 3. 运行增量覆盖率分析（Kotlin 脚本或 Java 程序）
-java -jar incremental-coverage-analyzer.jar \
-    --exec=$EXEC_FILE \
-    --diff=diff.patch \
-    --output=incremental-report.json
-
-# 4. 生成 HTML 报告
-genhtml --output-directory coverage-html full-coverage.info
+# 报告位置: app/build/reports/jacoco/jacocoTestReport/jacocoTestReport.xml
 ```
 
-## 上传到平台
+### 2. 获取 Git Diff
 
 ```bash
-# 上传覆盖率数据到平台
-curl -X POST http://your-platform/api/upload/coverage \
-  -F "projectId=1" \
-  -F "commitHash=abc123" \
-  -F "branch=main" \
-  -F "platform=android" \
-  -F "file=@coverage.exec" \
-  -F "report=@coverage-report.zip"
+git diff <old_commit> <new_commit> --unified=0 > diff.patch
 ```
+
+### 3. 运行增量分析
+
+```bash
+python incremental_coverage.py \
+    --jacoco-report app/build/reports/jacoco/jacocoTestReport/jacocoTestReport.xml \
+    --diff-file diff.patch \
+    --output incremental-report.json \
+    --old-commit abc123 \
+    --new-commit def456
+```
+
+### 4. 输出报告格式
+
+```json
+{
+  "summary": {
+    "total_files": 5,
+    "total_changed_lines": 120,
+    "total_covered_lines": 96,
+    "total_missed_lines": 24,
+    "overall_coverage_percent": 80.0,
+    "threshold": 80.0,
+    "status": "PASS"
+  },
+  "files": [
+    {
+      "file_path": "com/example/MainActivity.kt",
+      "total_changed_lines": 30,
+      "covered_lines": 28,
+      "missed_lines": 2,
+      "line_coverage_percent": 93.33
+    }
+  ]
+}
+```
+
+---
+
+## API 接口说明
+
+### CoverageCollector
+
+```kotlin
+// 初始化
+CoverageCollector.init(
+    application: Application,
+    uploadConfig: UploadConfig? = null,    // 上传配置（可选）
+    gitInfo: GitInfo? = null,              // Git 信息（可选）
+    autoUpload: Boolean = true             // 是否自动上传
+)
+
+// 手动 dump
+CoverageCollector.dumpCoverage(
+    context: Context,
+    force: Boolean = false,                // 强制保存（忽略时间间隔）
+    autoUpload: Boolean? = null            // 是否自动上传
+): String?
+
+// 手动上传
+CoverageCollector.uploadCoverage(
+    coverageFile: File,
+    commitHash: String? = null,
+    branch: String? = null
+): UploadResult
+
+// 获取文件
+CoverageCollector.getCoverageFiles(context): List<File>
+CoverageCollector.getLatestCoverageFile(context): File?
+CoverageCollector.getCoverageDirPath(context): String
+
+// 清除数据
+CoverageCollector.clearCoverageData(context)
+
+// 更新 Git 信息
+CoverageCollector.updateGitInfo(commitHash: String, branch: String)
+```
+
+### CoverageUploader
+
+```kotlin
+// 配置
+UploadConfig(
+    baseUrl: String,      // 平台地址
+    projectId: String,    // 项目 ID
+    apiKey: String? = null  // API 密钥（可选）
+)
+
+// 上传单个文件
+CoverageUploader.getInstance().uploadCoverage(
+    coverageFile: File,
+    commitHash: String,
+    branch: String,
+    metadata: Map<String, String> = emptyMap()
+): UploadResult
+
+// 批量上传
+CoverageUploader.getInstance().uploadMultiple(
+    coverageFiles: List<File>,
+    commitHash: String,
+    branch: String
+): List<UploadResult>
+
+// 上传 JSON 报告
+CoverageUploader.getInstance().uploadReport(
+    reportFile: File,
+    commitHash: String,
+    branch: String
+): UploadResult
+```
+
+---
+
+## 平台接口
+
+### 上传覆盖率数据
+
+```
+POST /api/upload/coverage
+Content-Type: multipart/form-data
+
+参数:
+- file: 覆盖率文件 (.ec)
+- projectId: 项目 ID
+- platform: android
+- commitHash: Git commit hash
+- branch: Git 分支名
+- appVersion: App 版本
+- deviceInfo: 设备信息 JSON
+- X-API-Key: API 密钥（Header）
+
+响应:
+{
+  "success": true,
+  "message": "Upload successful",
+  "reportId": "report_123"
+}
+```
+
+### 上传增量报告
+
+```
+POST /api/upload/report
+Content-Type: multipart/form-data
+
+参数:
+- report: JSON 报告文件
+- projectId: 项目 ID
+- platform: android
+- commitHash: Git commit hash
+- branch: Git 分支名
+- X-API-Key: API 密钥（Header）
+
+响应:
+{
+  "success": true,
+  "message": "Report uploaded",
+  "reportId": "report_123"
+}
+```
+
+---
+
+## 常见问题
+
+### Q1: ClassNotFoundException: org.jacoco.agent.rt.RT
+
+**原因：** 未开启 `testCoverageEnabled` 或 JaCoCo 版本不兼容
+
+**解决：**
+```gradle
+android {
+    buildTypes {
+        debug {
+            testCoverageEnabled true  // 必须开启
+        }
+    }
+}
+jacoco {
+    toolVersion = "0.8.11"  // 使用兼容版本
+}
+```
+
+### Q2: 覆盖率文件为空或 0 字节
+
+**原因：** App 未执行到任何被插桩的代码
+
+**解决：** 确保 App 有实际的测试操作，检查插桩范围是否正确
+
+### Q3: 上传失败 Network error
+
+**原因：** 网络问题或平台地址错误
+
+**解决：**
+- 检查 `baseUrl` 配置是否正确
+- 确保 App 有网络权限
+- 查看日志: `adb logcat -s CoverageCollector CoverageUploader`
+
+### Q4: 增量覆盖率分析找不到文件
+
+**原因：** Git diff 路径与 JaCoCo 报告路径不匹配
+
+**解决：** 使用 `incremental_coverage.py` 的精确匹配功能，确保路径规范化
+
+---
 
 ## 参考文档
 
