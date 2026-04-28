@@ -78,79 +78,8 @@ task jacocoTestReport(type: JacocoReport, dependsOn: ['testDebugUnitTest']) {
 }
 ```
 
-### 3. 运行时覆盖率数据收集
 
-创建 CoverageCollector 类：
-
-```kotlin
-package com.example.coverage
-
-import android.app.Application
-import android.content.Context
-import android.os.Process
-import java.io.File
-import java.io.FileOutputStream
-
-class CoverageCollector {
-    
-    companion object {
-        private const val COVERAGE_FILE_NAME = "coverage.exec"
-        
-        // 导出覆盖率数据
-        @JvmStatic
-        fun dumpCoverageData(context: Context) {
-            try {
-                val coverageFile = File(context.filesDir, COVERAGE_FILE_NAME)
-                
-                // 使用 JaCoCo Agent 的 dump 方法
-                val agentClass = Class.forName("org.jacoco.agent.rt.RT")
-                val getAgentMethod = agentClass.getMethod("getAgent")
-                val agent = getAgentMethod.invoke(null)
-                
-                val dumpMethod = agent.javaClass.getMethod(
-                    "dump", 
-                    Boolean::class.javaPrimitiveType
-                )
-                dumpMethod.invoke(agent, false)
-                
-                // 复制到指定位置
-                val execFile = File(context.filesDir, "jacoco.exec")
-                if (execFile.exists()) {
-                    execFile.copyTo(coverageFile, overwrite = true)
-                    println("Coverage data saved to: ${coverageFile.absolutePath}")
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
-        
-        // 在 Application 中注册生命周期回调
-        @JvmStatic
-        fun init(application: Application) {
-            application.registerActivityLifecycleCallbacks(
-                CoverageActivityLifecycleCallbacks()
-            )
-        }
-    }
-}
-```
-
-### 4. 自动收集覆盖率数据
-
-```kotlin
-class CoverageActivityLifecycleCallbacks : 
-    Application.ActivityLifecycleCallbacks {
-    
-    override fun onActivityStopped(activity: Activity) {
-        // App 进入后台时保存覆盖率数据
-        CoverageCollector.dumpCoverageData(activity.applicationContext)
-    }
-    
-    // ... 其他回调方法
-}
-```
-
-### 5. 在 Application 中初始化
+### 3. 在 Application 中初始化
 
 ```kotlin
 class MyApplication : Application() {
