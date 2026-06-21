@@ -375,7 +375,7 @@ router.post('/:buildId/raw-coverage', rawUpload.single('file'), async (req: Requ
       return res.status(404).json({ success: false, message: 'Build not found' });
     }
 
-    if (build.status !== 'ready') {
+    if (build.status === 'error') {
       fs.unlinkSync(req.file.path);
       return res.status(400).json({
         success: false,
@@ -421,6 +421,9 @@ router.post('/:buildId/raw-coverage', rawUpload.single('file'), async (req: Requ
 
     await withBuildLock(buildId, async () => {
       try {
+        // 标记为合并中，让客户端感知进度
+        await mongoDb.updateBuild(buildId, { status: 'processing' } as any);
+
         // 获取所有原始文件路径
         const allRawUploads = await mongoDb.getRawUploadsByBuild(buildId);
         const rawFilePaths = allRawUploads
@@ -472,14 +475,17 @@ router.post('/:buildId/raw-coverage', rawUpload.single('file'), async (req: Requ
             }
           }
 
-          // 如果有 gitDiff，计算增量覆盖率
+          // 如果有 gitDiff，计算增量覆盖率（按行数加权平均）
           if (build.gitDiff) {
             try {
               const incrementalFiles = await getIncrementalFiles(reportPath, build.gitDiff);
               if (incrementalFiles.length > 0) {
-                const incrementalCoverage = parseFloat(
-                  (incrementalFiles.reduce((sum, f) => sum + (f.incrementalCoverage || 0), 0) / incrementalFiles.length).toFixed(2)
-                );
+                const totalChanged = incrementalFiles.reduce((s, f) => s + f.changedLines.length, 0);
+                const incrementalCoverage = totalChanged > 0
+                  ? parseFloat(
+                      (incrementalFiles.reduce((s, f) => s + (f.incrementalCoverage || 0) * f.changedLines.length, 0) / totalChanged).toFixed(2)
+                    )
+                  : 0;
                 await mongoDb.updateReport(build.mergedReportId, {
                   incrementalCoverage,
                   gitDiff: build.gitDiff
@@ -519,14 +525,17 @@ router.post('/:buildId/raw-coverage', rawUpload.single('file'), async (req: Requ
             }
           }
 
-          // 如果有 gitDiff，计算增量覆盖率
+          // 如果有 gitDiff，计算增量覆盖率（按行数加权平均）
           if (build.gitDiff) {
             try {
               const incrementalFiles = await getIncrementalFiles(reportPath, build.gitDiff);
               if (incrementalFiles.length > 0) {
-                const incrementalCoverage = parseFloat(
-                  (incrementalFiles.reduce((sum, f) => sum + (f.incrementalCoverage || 0), 0) / incrementalFiles.length).toFixed(2)
-                );
+                const totalChanged = incrementalFiles.reduce((s, f) => s + f.changedLines.length, 0);
+                const incrementalCoverage = totalChanged > 0
+                  ? parseFloat(
+                      (incrementalFiles.reduce((s, f) => s + (f.incrementalCoverage || 0) * f.changedLines.length, 0) / totalChanged).toFixed(2)
+                    )
+                  : 0;
                 await mongoDb.updateReport(report.id, { incrementalCoverage });
               }
             } catch (e) {
@@ -721,6 +730,27 @@ router.post('/:buildId/remerge', async (req: Request, res: Response) => {
                 totalLines: file.totalLines,
                 coveredLines: file.coveredLines
               });
+            }
+          }
+
+          // 重新计算增量覆盖率（与 raw-coverage 上传流程保持一致）
+          if (build.gitDiff) {
+            try {
+              const incrementalFiles = await getIncrementalFiles(reportPath, build.gitDiff);
+              if (incrementalFiles.length > 0) {
+                const totalChanged = incrementalFiles.reduce((s, f) => s + f.changedLines.length, 0);
+                const incrementalCoverage = totalChanged > 0
+                  ? parseFloat(
+                      (incrementalFiles.reduce((s, f) => s + (f.incrementalCoverage || 0) * f.changedLines.length, 0) / totalChanged).toFixed(2)
+                    )
+                  : 0;
+                await mongoDb.updateReport(build.mergedReportId, {
+                  incrementalCoverage,
+                  gitDiff: build.gitDiff
+                });
+              }
+            } catch (e) {
+              console.error('Failed to compute incremental coverage during remerge:', e);
             }
           }
         }

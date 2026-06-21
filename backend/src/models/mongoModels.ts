@@ -34,7 +34,7 @@ export interface IBuild extends Document {
   buildVersion?: string;
   gitDiff?: string;
   binaryPath: string;
-  status: 'ready' | 'error';
+  status: 'ready' | 'processing' | 'error';
   mergedReportId?: mongoose.Types.ObjectId;
   rawUploadCount: number;
   lastMergedAt?: Date;
@@ -127,7 +127,7 @@ const BuildSchema = new Schema<IBuild>({
   buildVersion: { type: String },
   gitDiff: { type: String },
   binaryPath: { type: String, required: true },
-  status: { type: String, required: true, enum: ['ready', 'error'], default: 'ready' },
+  status: { type: String, required: true, enum: ['ready', 'processing', 'error'], default: 'ready' },
   mergedReportId: { type: Schema.Types.ObjectId, ref: 'CoverageReport' },
   rawUploadCount: { type: Number, default: 0 },
   lastMergedAt: { type: Date },

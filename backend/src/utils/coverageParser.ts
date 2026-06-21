@@ -250,22 +250,24 @@ function parseLCOV(filePath: string): CoverageData {
       totalLines++;
       if (currentFile) currentFile.totalLines++;
     } else if (line.startsWith('FN:')) {
-      // Function
-      totalFunctions++;
+      // FN: 仅是函数定义声明，实际统计由 FNDA: 完成，此处不计数
     } else if (line.startsWith('FNDA:')) {
       // Function data: FNDA:hitCount,functionName
       const parts = line.substring(5).split(',');
       const hitCount = parseInt(parts[0]);
-      
+      totalFunctions++; // 每条 FNDA 对应一个实际被统计的函数
       if (hitCount > 0) {
         coveredFunctions++;
       }
     } else if (line.startsWith('BRDA:')) {
-      // Branch data
-      totalBranches++;
+      // Branch data: BRDA:lineNumber,blockNumber,branchNumber,taken
+      // taken='-' 表示不可达分支，不计入总数
       const parts = line.substring(5).split(',');
-      if (parts.length >= 4 && parts[3] !== '-' && parseInt(parts[3]) > 0) {
-        coveredBranches++;
+      if (parts.length >= 4 && parts[3] !== '-') {
+        totalBranches++;
+        if (parseInt(parts[3]) > 0) {
+          coveredBranches++;
+        }
       }
     }
   }
@@ -698,9 +700,18 @@ export function parseGitDiff(diffContent: string): {
   
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    
+
+    // 新文件头：重置当前文件状态，防止 index/--- 等元数据行被误判为上下文行
+    if (line.startsWith('diff --git ')) {
+      if (currentFile && currentLines.length > 0) {
+        files.push({ filePath: currentFile, changedLines: [...currentLines] });
+      }
+      currentFile = null;
+      currentLines = [];
+      lineNumber = 0;
+    }
     // 解析文件路径（+++ b/path/to/file）
-    if (line.startsWith('+++ b/')) {
+    else if (line.startsWith('+++ b/')) {
       if (currentFile && currentLines.length > 0) {
         files.push({
           filePath: currentFile,
@@ -767,66 +778,54 @@ export async function getIncrementalFiles(
   // 获取所有文件的覆盖率数据
   const allFiles = await getReportFiles(reportPath);
   
-  // 过滤出变更的文件，并计算增量覆盖率
-  const incrementalFiles = diffFiles
+  // 先同步匹配覆盖率文件，过滤掉找不到对应文件的 diff 条目
+  const matchedFiles = diffFiles
     .map(diffFile => {
-      // 在覆盖率报告中查找匹配的文件
-      // 使用路径分隔符边界匹配，避免 test_calculator.py 匹配 calculator.py
       const coverageFile = allFiles.find(f => {
         if (f.filePath === diffFile.filePath) return true;
-        // 检查 endsWith 时确保边界是路径分隔符
         if (diffFile.filePath.endsWith('/' + f.filePath)) return true;
         if (f.filePath.endsWith('/' + diffFile.filePath)) return true;
-        // 仅当文件名完全相同时才匹配（basename 匹配）
         const fBasename = f.filePath.split('/').pop();
         const diffBasename = diffFile.filePath.split('/').pop();
         if (fBasename === diffBasename) return true;
-        // Android JaCoCo 包路径匹配（com/example/Foo.java → com.example.Foo）
         if (f.filePath.replace(/\//g, '.').endsWith(diffFile.filePath.replace(/\//g, '.'))) return true;
         return false;
       });
-      
-      if (!coverageFile) {
-        return null;
-      }
-      
-      // 获取文件的行级覆盖率
-      return getFileLineCoverage(reportPath, coverageFile.filePath).then(lineCoverage => {
-        if (!lineCoverage) {
-          return null;
-        }
-        
-        // 计算变更行的覆盖率
-        let changedCoveredLines = 0;
-        let changedTotalLines = 0;
-        
-        for (const lineNum of diffFile.changedLines) {
-          const lineData = lineCoverage.lines.find(l => l.lineNumber === lineNum);
-          if (lineData) {
-            changedTotalLines++;
-            if (lineData.isCovered) {
-              changedCoveredLines++;
-            }
-          }
-        }
-        
-        const incrementalCoverage = changedTotalLines > 0
-          ? parseFloat(((changedCoveredLines / changedTotalLines) * 100).toFixed(2))
-          : 0;
-        
-        return {
-          filePath: coverageFile.filePath,
-          lineCoverage: coverageFile.lineCoverage,
-          totalLines: coverageFile.totalLines,
-          coveredLines: coverageFile.coveredLines,
-          changedLines: diffFile.changedLines,
-          incrementalCoverage
-        };
-      });
+      return coverageFile ? { diffFile, coverageFile } : null;
     })
-    .filter((file): file is NonNullable<typeof file> => file !== null);
-  
-  // 等待所有 Promise 完成
-  const results = await Promise.all(incrementalFiles);
+    .filter((item): item is NonNullable<typeof item> => item !== null);
+
+  // 对匹配到的文件并发获取行级覆盖率并计算增量覆盖率
+  const results = await Promise.all(
+    matchedFiles.map(async ({ diffFile, coverageFile }) => {
+      const lineCoverage = await getFileLineCoverage(reportPath, coverageFile.filePath);
+      if (!lineCoverage) return null;
+
+      let changedCoveredLines = 0;
+      let changedTotalLines = 0;
+
+      for (const lineNum of diffFile.changedLines) {
+        const lineData = lineCoverage.lines.find(l => l.lineNumber === lineNum);
+        if (lineData) {
+          changedTotalLines++;
+          if (lineData.isCovered) changedCoveredLines++;
+        }
+      }
+
+      const incrementalCoverage = changedTotalLines > 0
+        ? parseFloat(((changedCoveredLines / changedTotalLines) * 100).toFixed(2))
+        : 0;
+
+      return {
+        filePath: coverageFile.filePath,
+        lineCoverage: coverageFile.lineCoverage,
+        totalLines: coverageFile.totalLines,
+        coveredLines: coverageFile.coveredLines,
+        changedLines: diffFile.changedLines,
+        incrementalCoverage
+      };
+    })
+  );
+
   return results.filter((file): file is NonNullable<typeof file> => file !== null);
 }

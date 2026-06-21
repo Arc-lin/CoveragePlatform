@@ -35,7 +35,7 @@ export interface Build {
   buildVersion?: string;
   gitDiff?: string;
   binaryPath: string;
-  status: 'ready' | 'error';
+  status: 'ready' | 'processing' | 'error';
   mergedReportId?: string;
   rawUploadCount: number;
   lastMergedAt?: string;

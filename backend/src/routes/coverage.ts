@@ -108,15 +108,20 @@ router.get('/:id/incremental', async (req: Request, res: Response) => {
     }
 
     const files = await getIncrementalFiles(report.reportPath, report.gitDiff);
+    const totalChangedLines = files.reduce((sum, f) => sum + (f.changedLines?.length || 0), 0);
+    // 按变更行数加权平均，避免小文件高覆盖率拉高整体数字
+    const averageIncrementalCoverage = totalChangedLines > 0
+      ? parseFloat(
+          (files.reduce((sum, f) => sum + (f.incrementalCoverage || 0) * (f.changedLines?.length || 0), 0) / totalChangedLines).toFixed(2)
+        )
+      : 0;
     res.json({
       success: true,
       data: files,
       summary: {
         totalFiles: files.length,
-        totalChangedLines: files.reduce((sum, f) => sum + (f.changedLines?.length || 0), 0),
-        averageIncrementalCoverage: files.length > 0
-          ? parseFloat((files.reduce((sum, f) => sum + (f.incrementalCoverage || 0), 0) / files.length).toFixed(2))
-          : 0
+        totalChangedLines,
+        averageIncrementalCoverage
       }
     });
   } catch (error) {

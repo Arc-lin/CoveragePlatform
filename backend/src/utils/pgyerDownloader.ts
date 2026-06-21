@@ -40,8 +40,12 @@ export async function getIPADownloadUrl(pgyerKey: string): Promise<{ url: string
     'Accept': '*/*',
   });
 
-  // 解析 plist XML
-  const result = await parseStringPromise(xmlContent, { explicitArray: true });
+  // 解析 plist XML，保留子节点顺序以支持混合类型 dict
+  const result = await parseStringPromise(xmlContent, {
+    explicitArray: true,
+    explicitChildren: true,
+    preserveChildrenOrder: true
+  });
 
   // 导航 plist 结构: plist > dict > items(array) > dict > assets(array) > dict(kind=software-package)
   const ipaUrl = extractSoftwarePackageUrl(result);
@@ -214,22 +218,20 @@ function fetchUrl(url: string, headers: Record<string, string>): Promise<string>
 function extractSoftwarePackageUrl(plistObj: any): string | null {
   try {
     const plistDict = plistObj.plist.dict[0];
-    const itemsArray = getDictValue(plistDict, 'items');
-    if (!itemsArray || !Array.isArray(itemsArray)) return null;
+    // getDictValue 返回 array 时为子节点列表（$$）
+    const itemsChildren = getDictValue(plistDict, 'items');
+    if (!Array.isArray(itemsChildren)) return null;
 
-    const firstItem = itemsArray[0];
-    if (!firstItem || !firstItem.dict) return null;
+    for (const child of itemsChildren) {
+      if (child['#name'] !== 'dict') continue;
+      const assetsChildren = getDictValue(child, 'assets');
+      if (!Array.isArray(assetsChildren)) continue;
 
-    const assetsArray = getDictValue(firstItem.dict[0] || firstItem, 'assets');
-    if (!assetsArray || !Array.isArray(assetsArray)) return null;
-
-    // assets 是一个 dict 数组
-    for (const assetContainer of assetsArray) {
-      const dicts = assetContainer.dict || [assetContainer];
-      for (const dict of dicts) {
-        const kind = getDictValue(dict, 'kind');
+      for (const assetNode of assetsChildren) {
+        if (assetNode['#name'] !== 'dict') continue;
+        const kind = getDictValue(assetNode, 'kind');
         if (kind === 'software-package') {
-          const url = getDictValue(dict, 'url');
+          const url = getDictValue(assetNode, 'url');
           if (url) return url;
         }
       }
@@ -241,29 +243,44 @@ function extractSoftwarePackageUrl(plistObj: any): string | null {
 }
 
 /**
- * 从 xml2js 解析的 dict 结构中按 key 名获取值
- * plist dict 在 xml2js 中表示为: { key: ['key1', 'key2'], string: ['val1', 'val2'], ... }
+ * 从 xml2js 解析的 dict 结构中按 key 名获取值。
+ * 依赖 parseStringPromise 选项 { explicitChildren: true, preserveChildrenOrder: true }，
+ * 通过 $$ 有序子节点正确处理混合类型 dict，避免按类型分组后索引错位的问题。
+ *
+ * 返回值：
+ *   - string/integer/real: 对应的文本内容（string 类型）
+ *   - true/false: boolean
+ *   - array: 子节点数组（$$），每个子节点含 #name 字段
+ *   - dict: dict 子节点本身
  */
 function getDictValue(dict: any, keyName: string): any {
-  if (!dict || !dict.key) return null;
-  const keys: string[] = Array.isArray(dict.key) ? dict.key : [dict.key];
-  const idx = keys.indexOf(keyName);
-  if (idx === -1) return null;
+  if (!dict || !Array.isArray(dict.$$)) return null;
 
-  // 值可能是 string, array, dict, true, false 等类型
-  for (const type of ['string', 'array', 'dict', 'integer', 'real', 'true', 'false']) {
-    if (dict[type]) {
-      const values = Array.isArray(dict[type]) ? dict[type] : [dict[type]];
-      // 计算这个 key 对应第几个此类型的值
-      // plist dict 中 key 和 value 是交替的，所以我们需要按位置匹配
-      // xml2js 会按类型分组值，我们需要按原始顺序找到第 idx 个值
-      // 简化处理：如果只有一种值类型（常见情况），直接按 idx 索引
-      if (values[idx] !== undefined) {
-        return values[idx];
+  const children: any[] = dict.$$;
+  for (let i = 0; i < children.length - 1; i++) {
+    const child = children[i];
+    if (child['#name'] === 'key' && child._ === keyName) {
+      const valueNode = children[i + 1];
+      if (!valueNode) return null;
+      switch (valueNode['#name']) {
+        case 'string':
+        case 'integer':
+        case 'real':
+          return valueNode._ ?? null;
+        case 'true':
+          return true;
+        case 'false':
+          return false;
+        case 'array':
+          // 返回 array 的有序子节点列表
+          return Array.isArray(valueNode.$$) ? valueNode.$$ : [];
+        case 'dict':
+          return valueNode;
+        default:
+          return valueNode._ ?? null;
       }
     }
   }
-
   return null;
 }
 

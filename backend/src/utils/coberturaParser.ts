@@ -105,11 +105,14 @@ export async function parseCoberturaXML(filePath: string): Promise<CoverageData>
       const methods = cls.methods?.[0]?.method || [];
       for (const method of methods) {
         totalMethods++;
-        // 检查方法内是否有任何被覆盖的行
-        const methodLines = method.lines?.[0]?.line || [];
-        const hasHit = methodLines.some((l: any) => parseInt(l.$.hits || '0') > 0);
-        if (hasHit) {
-          coveredMethods++;
+        // 优先使用 line-rate 属性（更可靠），降级到行扫描
+        const lineRate = parseFloat(method.$?.['line-rate'] ?? '-1');
+        if (lineRate >= 0) {
+          if (lineRate > 0) coveredMethods++;
+        } else {
+          const methodLines = method.lines?.[0]?.line || [];
+          const hasHit = methodLines.some((l: any) => parseInt(l.$.hits || '0') > 0);
+          if (hasHit) coveredMethods++;
         }
       }
 
