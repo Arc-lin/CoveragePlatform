@@ -111,13 +111,16 @@ curl -X POST http://localhost:3001/api/upload/coverage \
 ### 命令行上传
 
 ```bash
-# Android
+# Android（先生成 XML 报告再上传）
+./gradlew jacocoUITestReport   # 生成 XML
+
 curl -X POST http://localhost:3001/api/upload/coverage \
-  -F "projectId=1" \
+  -F "projectId=<PROJECT_ID>" \
   -F "platform=android" \
-  -F "commitHash=abc123" \
-  -F "branch=main" \
-  -F "file=@app/build/outputs/code_coverage/coverage.ec"
+  -F "commitHash=$(git rev-parse HEAD)" \
+  -F "branch=$(git rev-parse --abbrev-ref HEAD)" \
+  -F "file=@app/build/reports/jacoco/jacocoUITestReport/jacocoUITestReport.xml" \
+  -F "gitDiff=$(git diff <base_commit>..HEAD -- app/src/main/java/)"
 
 # iOS
 curl -X POST http://localhost:3001/api/upload/coverage \
@@ -153,6 +156,16 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
+      - name: Run connected tests & generate coverage
+        run: |
+          ./gradlew connectedDevDebugAndroidTest
+          ./gradlew jacocoUITestReport
+
+      - name: Generate git diff
+        run: |
+          BASE_COMMIT=$(git merge-base origin/main HEAD)
+          git diff $BASE_COMMIT HEAD --unified=0 -- app/src/main/java/ > /tmp/diff.txt
+
       - name: Upload Coverage
         run: |
           curl -X POST ${{ secrets.COVERAGE_PLATFORM_URL }}/api/upload/coverage \
@@ -160,7 +173,8 @@ jobs:
             -F "platform=android" \
             -F "commitHash=${{ github.sha }}" \
             -F "branch=${{ github.ref_name }}" \
-            -F "file=@app/build/outputs/code_coverage/coverage.ec"
+            -F "file=@app/build/reports/jacoco/jacocoUITestReport/jacocoUITestReport.xml" \
+            -F "gitDiff=</tmp/diff.txt"
 ```
 
 #### GitHub Actions 示例（Python）
@@ -231,6 +245,15 @@ jobs:
 | 方法 | 路径 | 描述 |
 |------|------|------|
 | POST | `/api/upload/coverage` | 上传覆盖率数据 |
+| POST | `/api/upload/coverage/batch` | 批量上传覆盖率数据 |
+
+### 增量与文件覆盖率 API
+
+| 方法 | 路径 | 描述 |
+|------|------|------|
+| GET | `/api/coverage/:id/incremental` | 获取增量覆盖率（基于已存储的 gitDiff） |
+| GET | `/api/coverage/:id/files` | 获取文件覆盖率列表 |
+| GET | `/api/coverage/:id/source?path=` | 获取带覆盖率的源码（从 GitHub 获取） |
 
 ## 🛠️ 技术栈
 

@@ -85,7 +85,7 @@ Code Coverage Platform 后端提供 RESTful API，支持项目管理、覆盖率
 |------|------|------|------|
 | `name` | string | 是 | 项目名称 |
 | `platform` | `ios` \| `android` \| `python` | 是 | 平台类型 |
-| `repositoryUrl` | string | 是 | 代码仓库地址 |
+| `repositoryUrl` | string | 是 | 代码仓库完整 URL，格式 `https://github.com/owner/repo`。**源码高亮展示**功能依赖此字段，目前仅支持 GitHub 公开仓库，且必须是完整 URL 而非 `owner/repo` 短格式。 |
 
 **响应 (201)：** 返回创建的 Project 对象。
 
@@ -237,6 +237,8 @@ Code Coverage Platform 后端提供 RESTful API，支持项目管理、覆盖率
 ### `POST /api/upload/coverage`
 
 上传覆盖率数据文件并创建报告。
+
+> **注意**：默认 body 大小限制为 10MB。上传大型 XML（> 10MB）时需在后端 `src/app.ts` 中调整 `express.json({ limit: '...' })`。
 
 **Content-Type:** `multipart/form-data`
 

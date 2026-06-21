@@ -34,3 +34,10 @@ Thumbs.db
 # Logs
 *.log
 npm-debug.log*
+
+# MongoDB data files
+data/db/
+
+# Agent state files
+.omc/
+backend/.omc/

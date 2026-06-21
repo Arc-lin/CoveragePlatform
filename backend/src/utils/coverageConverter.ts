@@ -5,6 +5,16 @@ import path from 'path';
 // Per-build 内存锁，避免同一 Build 的并发合并
 const buildLocks = new Map<string, Promise<void>>();
 
+// 优先使用 JAVA_HOME 中的 java，保证 macOS 环境下能找到 JDK
+function getJavaBin(): string {
+  const javaHome = process.env.JAVA_HOME;
+  if (javaHome) {
+    const javaBin = path.join(javaHome, 'bin', 'java');
+    if (fs.existsSync(javaBin)) return `"${javaBin}"`;
+  }
+  return 'java';
+}
+
 export async function withBuildLock(buildId: string, fn: () => Promise<void>): Promise<void> {
   const prev = buildLocks.get(buildId) || Promise.resolve();
   const current = prev.then(fn, fn);
@@ -29,7 +39,7 @@ export function checkToolAvailability(): { ios: boolean; android: boolean; error
   }
 
   try {
-    execSync('java -version', { stdio: 'pipe', timeout: 5000 });
+    execSync(`${getJavaBin()} -version`, { stdio: 'pipe', timeout: 5000 });
   } catch {
     android = false;
     errors.push('java not available. Android .ec conversion will not work.');
@@ -101,11 +111,12 @@ export async function mergeAndroidCoverage(
 
   // Step 1: 合并所有 .ec → merged.exec
   const quotedPaths = ecPaths.map(p => `"${p}"`).join(' ');
-  const mergeCmd = `java -jar "${jacocoCliPath}" merge ${quotedPaths} --destfile "${mergedExecPath}"`;
+  const java = getJavaBin();
+  const mergeCmd = `${java} -jar "${jacocoCliPath}" merge ${quotedPaths} --destfile "${mergedExecPath}"`;
   execSync(mergeCmd, { timeout: 120000, stdio: 'pipe' });
 
   // Step 2: 生成 XML 报告
-  const reportCmd = `java -jar "${jacocoCliPath}" report "${mergedExecPath}" --classfiles "${classfilesDir}" --xml "${xmlPath}"`;
+  const reportCmd = `${java} -jar "${jacocoCliPath}" report "${mergedExecPath}" --classfiles "${classfilesDir}" --xml "${xmlPath}"`;
   execSync(reportCmd, { timeout: 120000, stdio: 'pipe' });
 
   return xmlPath;
