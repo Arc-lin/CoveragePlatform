@@ -5,16 +5,15 @@ import { projectApi } from '../services/api';
 import { Project } from '../types';
 import { getPlatformBadge } from '../utils/coverage';
 
+const EMPTY_FORM = { name: '', platform: 'android' as 'ios' | 'android' | 'python', repositoryUrl: '' };
+
 const Projects: React.FC = () => {
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showModal, setShowModal] = useState(false);
-  const [formData, setFormData] = useState({
-    name: '',
-    platform: 'android' as 'ios' | 'android' | 'python',
-    repositoryUrl: ''
-  });
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [formData, setFormData] = useState(EMPTY_FORM);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -35,15 +34,40 @@ const Projects: React.FC = () => {
     }
   };
 
+  const openCreate = () => {
+    setEditingId(null);
+    setFormData(EMPTY_FORM);
+    setShowModal(true);
+  };
+
+  const openEdit = (project: Project) => {
+    setEditingId(project.id);
+    setFormData({
+      name: project.name,
+      platform: project.platform as 'ios' | 'android' | 'python',
+      repositoryUrl: project.repositoryUrl || ''
+    });
+    setShowModal(true);
+  };
+
+  const handleClose = () => {
+    setShowModal(false);
+    setEditingId(null);
+    setFormData(EMPTY_FORM);
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      await projectApi.create(formData);
-      setShowModal(false);
-      setFormData({ name: '', platform: 'android', repositoryUrl: '' });
+      if (editingId) {
+        await projectApi.update(editingId, formData);
+      } else {
+        await projectApi.create(formData);
+      }
+      handleClose();
       loadProjects();
     } catch (err) {
-      setError('Failed to create project');
+      setError(editingId ? 'Failed to update project' : 'Failed to create project');
     }
   };
 
@@ -69,7 +93,7 @@ const Projects: React.FC = () => {
     <div>
       <div className="d-flex justify-content-between align-items-center mb-4">
         <h2>项目管理</h2>
-        <Button variant="primary" onClick={() => setShowModal(true)}>
+        <Button variant="primary" onClick={openCreate}>
           <i className="bi bi-plus-lg me-2"></i>新建项目
         </Button>
       </div>
@@ -81,7 +105,7 @@ const Projects: React.FC = () => {
           {projects.length === 0 ? (
             <div className="text-center py-5">
               <p className="text-muted">暂无项目</p>
-              <Button variant="primary" onClick={() => setShowModal(true)}>
+              <Button variant="primary" onClick={openCreate}>
                 创建第一个项目
               </Button>
             </div>
@@ -106,27 +130,37 @@ const Projects: React.FC = () => {
                     </td>
                     <td>{getPlatformBadge(project.platform)}</td>
                     <td className="text-truncate" style={{ maxWidth: '200px' }}>
-                      {project.repositoryUrl || '-'}
+                      {project.repositoryUrl
+                        ? <a href={project.repositoryUrl} target="_blank" rel="noreferrer" className="text-decoration-none">{project.repositoryUrl}</a>
+                        : <span className="text-muted">-</span>
+                      }
                     </td>
                     <td>{new Date(project.createdAt).toLocaleDateString()}</td>
                     <td>
                       <div className="d-flex gap-2">
-                        <Button 
-                          variant="outline-primary" 
+                        <Button
+                          variant="outline-primary"
                           size="sm"
                           onClick={() => navigate(`/projects/${project.id}`)}
                         >
                           查看
                         </Button>
-                        <Button 
-                          variant="outline-success" 
+                        <Button
+                          variant="outline-secondary"
+                          size="sm"
+                          onClick={() => openEdit(project)}
+                        >
+                          编辑
+                        </Button>
+                        <Button
+                          variant="outline-success"
                           size="sm"
                           onClick={() => navigate(`/upload?project=${project.id}`)}
                         >
                           上传
                         </Button>
-                        <Button 
-                          variant="outline-danger" 
+                        <Button
+                          variant="outline-danger"
                           size="sm"
                           onClick={() => handleDelete(project.id)}
                         >
@@ -142,10 +176,10 @@ const Projects: React.FC = () => {
         </Card.Body>
       </Card>
 
-      {/* 创建项目 Modal */}
-      <Modal show={showModal} onHide={() => setShowModal(false)}>
+      {/* 创建 / 编辑 Modal */}
+      <Modal show={showModal} onHide={handleClose}>
         <Modal.Header closeButton>
-          <Modal.Title>新建项目</Modal.Title>
+          <Modal.Title>{editingId ? '编辑项目' : '新建项目'}</Modal.Title>
         </Modal.Header>
         <Form onSubmit={handleSubmit}>
           <Modal.Body>
@@ -177,19 +211,19 @@ const Projects: React.FC = () => {
                 required
                 value={formData.repositoryUrl}
                 onChange={e => setFormData({ ...formData, repositoryUrl: e.target.value })}
-                placeholder="https://github.com/..."
+                placeholder="https://github.com/owner/repo"
               />
               <Form.Text className="text-muted">
-                用于获取源码展示覆盖率详情，目前仅支持 GitHub 仓库
+                完整 GitHub 仓库 URL，用于展示带覆盖率标注的源码，格式：https://github.com/owner/repo
               </Form.Text>
             </Form.Group>
           </Modal.Body>
           <Modal.Footer>
-            <Button variant="secondary" onClick={() => setShowModal(false)}>
+            <Button variant="secondary" onClick={handleClose}>
               取消
             </Button>
             <Button variant="primary" type="submit">
-              创建
+              {editingId ? '保存修改' : '创建'}
             </Button>
           </Modal.Footer>
         </Form>
