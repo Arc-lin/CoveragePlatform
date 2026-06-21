@@ -122,20 +122,25 @@ curl -X POST http://localhost:3001/api/upload/coverage \
   -F "file=@app/build/reports/jacoco/jacocoUITestReport/jacocoUITestReport.xml" \
   -F "gitDiff=$(git diff <base_commit>..HEAD -- app/src/main/java/)"
 
-# iOS
+# iOS（需先将 .profraw 转换为 LCOV .info 格式再上传）
+# Step 1: 合并 profraw → profdata
+xcrun llvm-profdata merge -sparse *.profraw -o merged.profdata
+# Step 2: 导出 LCOV
+xcrun llvm-cov export <binary> -instr-profile=merged.profdata -format=lcov > coverage.info
+# Step 3: 上传
 curl -X POST http://localhost:3001/api/upload/coverage \
-  -F "projectId=2" \
+  -F "projectId=<PROJECT_ID>" \
   -F "platform=ios" \
-  -F "commitHash=def456" \
-  -F "branch=develop" \
-  -F "file=@Demo.profraw"
+  -F "commitHash=$(git rev-parse HEAD)" \
+  -F "branch=$(git rev-parse --abbrev-ref HEAD)" \
+  -F "file=@coverage.info"
 
 # Python
 curl -X POST http://localhost:3001/api/upload/coverage \
-  -F "projectId=3" \
+  -F "projectId=<PROJECT_ID>" \
   -F "platform=python" \
-  -F "commitHash=abc789" \
-  -F "branch=main" \
+  -F "commitHash=$(git rev-parse HEAD)" \
+  -F "branch=$(git rev-parse --abbrev-ref HEAD)" \
   -F "file=@coverage.xml"
 ```
 
