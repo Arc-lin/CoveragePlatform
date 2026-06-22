@@ -4,7 +4,6 @@
 //
 
 #import "CoverageCollector.h"
-#import <dlfcn.h>
 
 // LLVM Profile 运行时函数声明
 #ifndef PROFILE_INSTRPROFILING_H_
@@ -20,24 +19,8 @@ const char *__llvm_profile_get_path_prefix(void);
 
 #endif /* PROFILE_INSTRPROFILING_H_ */
 
-// Sanitizer Coverage 回调函数
-void __sanitizer_cov_trace_pc_guard_init(uint32_t *start, uint32_t *stop) {
-    static uint64_t N;
-    if (start == stop || *start) return;
-    for (uint32_t *x = start; x < stop; x++) {
-        *x = ++N;
-    }
-}
-
-void __sanitizer_cov_trace_pc_guard(uint32_t *guard) {
-    void *PC = __builtin_return_address(0);
-    Dl_info info;
-    dladdr(PC, &info);
-    // 可以在这里添加调试日志
-    // NSLog(@"[Coverage] PC: %p, Function: %s", PC, info.dli_sname);
-}
-
 static NSString *s_coverageDirectory = nil;
+static NSString *s_coverageFilePath = nil;
 
 @implementation CoverageCollector
 
@@ -64,11 +47,17 @@ static NSString *s_coverageDirectory = nil;
 }
 
 + (nullable NSString *)coverageFilePath {
+    // 固定路径：第一次调用时算好就缓存住，后续调用（dumpCoverageData 的日志、CoverageUploader
+    // 取最新文件）必须拿到同一个路径，否则会拿到一个从未被 __llvm_profile_write_file 写过的新路径
+    if (s_coverageFilePath) {
+        return s_coverageFilePath;
+    }
     NSString *directory = [self coverageDirectory];
     NSString *bundleIdentifier = [[NSBundle mainBundle] bundleIdentifier] ?: @"unknown";
     NSString *timestamp = [self currentTimestamp];
     NSString *fileName = [NSString stringWithFormat:@"%@_%@.profraw", bundleIdentifier, timestamp];
-    return [directory stringByAppendingPathComponent:fileName];
+    s_coverageFilePath = [directory stringByAppendingPathComponent:fileName];
+    return s_coverageFilePath;
 }
 
 + (NSArray<NSString *> *)allCoverageFiles {
@@ -110,7 +99,8 @@ static NSString *s_coverageDirectory = nil;
 
 + (void)setCoverageDirectory:(NSString *)directory {
     s_coverageDirectory = [directory copy];
-    
+    s_coverageFilePath = nil; // 目录变了，让 coverageFilePath 下次调用时按新目录重新计算
+
     // 确保目录存在
     NSFileManager *fileManager = [NSFileManager defaultManager];
     if (![fileManager fileExistsAtPath:directory]) {
