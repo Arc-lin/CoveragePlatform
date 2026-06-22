@@ -7,6 +7,7 @@ import { mongoDb } from '../models/database';
 import { mergeIOSCoverage, mergeAndroidCoverage, withBuildLock, checkToolAvailability } from '../utils/coverageConverter';
 import { parseIOSCoverage, parseAndroidCoverage, getIncrementalFiles } from '../utils/coverageParser';
 import { extractPgyerKey, getIPADownloadUrl, downloadIPA, extractBinaryFromIPA } from '../utils/pgyerDownloader';
+import { moveFile } from '../utils/fsUtils';
 import { Build } from '../types';
 
 const router = Router();
@@ -301,7 +302,7 @@ router.post('/', binaryUpload.single('binary'), async (req: Request, res: Respon
 
     // 移动 binary 到永久位置
     const permanentBinaryPath = path.join(binaryDir, req.file.originalname);
-    fs.renameSync(req.file.path, permanentBinaryPath);
+    moveFile(req.file.path, permanentBinaryPath);
 
     // Android: 自动解压 classfiles.zip
     if (project.platform === 'android' && req.file.originalname.endsWith('.zip')) {
@@ -399,7 +400,7 @@ router.post('/:buildId/raw-coverage', rawUpload.single('file'), async (req: Requ
     const rawDir = path.join(buildDir, 'raw');
     fs.mkdirSync(rawDir, { recursive: true });
     const permanentPath = path.join(rawDir, `${uuidv4()}_${req.file.originalname}`);
-    fs.renameSync(req.file.path, permanentPath);
+    moveFile(req.file.path, permanentPath);
 
     // 创建 RawUpload 记录
     const rawUploadRecord = await mongoDb.createRawUpload({

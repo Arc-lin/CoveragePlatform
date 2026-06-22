@@ -1,5 +1,7 @@
 FROM node:20-alpine
 
+RUN apk add --no-cache openjdk17-jre-headless curl
+
 WORKDIR /app
 
 COPY backend/package*.json ./
@@ -7,6 +9,10 @@ RUN npm ci --omit=dev --ignore-scripts && \
     npm install --ignore-scripts ts-node-dev typescript
 
 COPY backend/ ./
+
+RUN mkdir -p tools && \
+    curl -sL -o tools/jacococli.jar \
+    "https://repo1.maven.org/maven2/org/jacoco/org.jacoco.cli/0.8.12/org.jacoco.cli-0.8.12-nodeps.jar"
 
 RUN npm run build
 

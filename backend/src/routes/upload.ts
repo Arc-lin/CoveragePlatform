@@ -5,6 +5,7 @@ import fs from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import { mongoDb } from '../models/database';
 import { parseAndroidCoverage, parseIOSCoverage, parsePythonCoverage, getIncrementalFiles } from '../utils/coverageParser';
+import { moveFile } from '../utils/fsUtils';
 
 const router = Router();
 
@@ -109,7 +110,7 @@ router.post('/coverage', upload.single('file'), async (req: Request, res: Respon
     }
 
     const permanentPath = path.join(reportsDir, `${uuidv4()}_${req.file.originalname}`);
-    fs.renameSync(filePath, permanentPath);
+    moveFile(filePath, permanentPath);
 
     // 创建覆盖率报告记录
     const report = await mongoDb.createReport({
