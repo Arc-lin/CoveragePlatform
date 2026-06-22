@@ -4,7 +4,7 @@
 
 ## 📋 功能特性
 
-- **多平台支持**: 同时支持 iOS (LLVM Sanitizer Coverage)、Android (JaCoCo) 和 Python (coverage.py)
+- **多平台支持**: 同时支持 iOS (LLVM Profile Instrumentation)、Android (JaCoCo) 和 Python (coverage.py)
 - **增量覆盖率**: 基于 Git Diff 的增量代码覆盖率统计
 - **可视化报告**: 美观的 HTML 报告，支持行级覆盖率展示
 - **历史趋势**: 覆盖率变化趋势图表
@@ -21,6 +21,7 @@ CodeCoveragePlatform/
 │   │   ├── models/         # 数据模型
 │   │   ├── routes/         # API 路由
 │   │   └── services/       # 业务逻辑
+│   ├── 接口文档.md          # 后端 API 文档
 │   └── package.json
 ├── frontend/               # 前端应用 (React + TypeScript)
 │   ├── src/
@@ -29,17 +30,18 @@ CodeCoveragePlatform/
 │   │   └── services/       # API 服务
 │   └── package.json
 ├── android-coverage/       # Android 覆盖率方案
-│   ├── README.md           # 集成文档
+│   ├── 接入文档.md          # 集成文档
 │   ├── CoverageCollector.kt
 │   ├── CoverageUploader.kt
 │   ├── build.gradle.example
 │   └── incremental_coverage.py
 ├── ios-coverage/          # iOS 覆盖率方案
-│   ├── README.md          # 集成文档
+│   ├── 接入文档.md         # 集成文档
 │   ├── CoverageCollector.h/m
-│   ├── CoverageCollector.swift
 │   └── coverage_report.sh
-└── docs/                  # 文档
+├── python-coverage/       # Python 覆盖率方案
+│   └── 接入文档.md         # 集成文档
+└── docs/                  # 本地参考资料（API 文档、部署指南、测试计划等，已 gitignore，不会提交）
 ```
 
 ## 🚀 快速开始
@@ -68,7 +70,7 @@ npm start
 
 #### Android
 
-参考 `android-coverage/README.md` 进行集成
+参考 [android-coverage/接入文档.md](android-coverage/接入文档.md) 进行集成
 
 ```kotlin
 // Application.onCreate()
@@ -77,7 +79,8 @@ CoverageCollector.init(this)
 
 #### iOS
 
-参考 `ios-coverage/README.md` 进行集成
+参考 [ios-coverage/接入文档.md](ios-coverage/接入文档.md) 进行集成（只提供 Objective-C 实现，
+Swift 项目通过 Bridging Header 混编接入）
 
 ```objc
 // AppDelegate.m
@@ -86,7 +89,7 @@ CoverageCollector.init(this)
 
 #### Python
 
-Python 项目使用手动上传方式，无需 SDK 集成：
+参考 [python-coverage/接入文档.md](python-coverage/接入文档.md) 进行集成，手动上传方式，无需 SDK：
 
 ```bash
 # 1. 安装 coverage.py
@@ -258,23 +261,24 @@ jobs:
 |------|------|------|
 | GET | `/api/coverage/:id/incremental` | 获取增量覆盖率（基于已存储的 gitDiff） |
 | GET | `/api/coverage/:id/files` | 获取文件覆盖率列表 |
-| GET | `/api/coverage/:id/source?path=` | 获取带覆盖率的源码（从 GitHub 获取） |
+| GET | `/api/coverage/:id/source?path=` | 获取带覆盖率的源码（支持 GitHub/GitLab/Gitee/Bitbucket） |
 
 ## 🛠️ 技术栈
 
 - **Backend**: Node.js, Express, TypeScript, MongoDB
 - **Frontend**: React, TypeScript, Bootstrap
 - **Android**: JaCoCo, Kotlin
-- **iOS**: LLVM Sanitizer Coverage, Objective-C/Swift
+- **iOS**: LLVM Profile Instrumentation, Objective-C（Swift 项目通过 Bridging Header 混编接入）
 - **Python**: coverage.py (Cobertura XML / LCOV / JSON)
 
 ## 📚 详细文档
 
-- [工程接入指南](docs/integration-guide.md)
-- [Android 覆盖率方案](android-coverage/README.md)
-- [iOS 覆盖率方案](ios-coverage/README.md)
-- [后端 API 文档](docs/api.md)
-- [部署指南](docs/deployment.md)
+- [Android 覆盖率方案](android-coverage/接入文档.md)
+- [iOS 覆盖率方案](ios-coverage/接入文档.md)
+- [Python 覆盖率方案](python-coverage/接入文档.md)
+- [后端 API 文档](backend/接口文档.md)
+
+`docs/` 目录下还有本地保留的部署指南、测试计划等参考资料，未提交到仓库（已 gitignore），仅供本地查阅。
 
 ## 🤝 贡献
 

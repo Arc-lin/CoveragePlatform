@@ -42,3 +42,6 @@ backend/data/
 # Agent state files
 .omc/
 backend/.omc/
+
+# Planning / reference docs — kept locally, not tracked in git
+docs/
