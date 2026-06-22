@@ -37,6 +37,7 @@ npm-debug.log*
 
 # MongoDB data files
 data/db/
+backend/data/
 
 # Agent state files
 .omc/
