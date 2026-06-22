@@ -5,7 +5,7 @@ import { projectApi } from '../services/api';
 import { Project } from '../types';
 import { getPlatformBadge } from '../utils/coverage';
 
-const EMPTY_FORM = { name: '', platform: 'android' as 'ios' | 'android' | 'python', repositoryUrl: '' };
+const EMPTY_FORM = { name: '', platform: 'android' as 'ios' | 'android' | 'python', repositoryUrl: '', accessToken: '' };
 
 const Projects: React.FC = () => {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -13,6 +13,7 @@ const Projects: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingHasToken, setEditingHasToken] = useState(false);
   const [formData, setFormData] = useState(EMPTY_FORM);
   const navigate = useNavigate();
 
@@ -42,10 +43,12 @@ const Projects: React.FC = () => {
 
   const openEdit = (project: Project) => {
     setEditingId(project.id);
+    setEditingHasToken(!!project.hasAccessToken);
     setFormData({
       name: project.name,
       platform: project.platform as 'ios' | 'android' | 'python',
-      repositoryUrl: project.repositoryUrl || ''
+      repositoryUrl: project.repositoryUrl || '',
+      accessToken: ''
     });
     setShowModal(true);
   };
@@ -53,6 +56,7 @@ const Projects: React.FC = () => {
   const handleClose = () => {
     setShowModal(false);
     setEditingId(null);
+    setEditingHasToken(false);
     setFormData(EMPTY_FORM);
   };
 
@@ -214,7 +218,22 @@ const Projects: React.FC = () => {
                 placeholder="https://github.com/owner/repo"
               />
               <Form.Text className="text-muted">
-                完整 GitHub 仓库 URL，用于展示带覆盖率标注的源码，格式：https://github.com/owner/repo
+                完整仓库 URL，用于展示带覆盖率标注的源码。支持 GitHub / GitLab（含自建实例）/ Gitee / Bitbucket，格式：https://{'{host}'}/{'{owner}'}/{'{repo}'}
+              </Form.Text>
+            </Form.Group>
+            <Form.Group className="mb-3">
+              <Form.Label>
+                访问令牌（可选）
+                {editingHasToken && <span className="text-success ms-2">（已配置）</span>}
+              </Form.Label>
+              <Form.Control
+                type="password"
+                value={formData.accessToken}
+                onChange={e => setFormData({ ...formData, accessToken: e.target.value })}
+                placeholder={editingId ? '留空则不修改已保存的令牌' : ''}
+              />
+              <Form.Text className="text-muted">
+                私有仓库才需要填写：GitHub 用 Personal Access Token，GitLab 用 PRIVATE-TOKEN，Gitee 用 access_token，Bitbucket 用 App Password / Bearer token
               </Form.Text>
             </Form.Group>
           </Modal.Body>

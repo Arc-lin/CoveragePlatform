@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { mongoDb } from '../models/database';
 import { getFileLineCoverage, getReportFiles, getIncrementalFiles } from '../utils/coverageParser';
+import { parseRepositoryUrl, buildRawFileRequest } from '../utils/gitProvider';
 import https from 'https';
 import http from 'http';
 import path from 'path';
@@ -493,17 +494,16 @@ router.get('/:id/source', async (req: Request, res: Response) => {
       });
     }
 
-    // 解析 GitHub 仓库信息: https://github.com/{owner}/{repo}.git
-    const repoUrl = project.repositoryUrl.replace(/\.git$/, '');
-    const match = repoUrl.match(/github\.com\/([^/]+)\/([^/]+)/);
-    if (!match) {
+    // 解析仓库信息，支持 GitHub / GitLab（含自建实例）/ Gitee / Bitbucket
+    const parsedRepo = parseRepositoryUrl(project.repositoryUrl);
+    if (!parsedRepo) {
       return res.status(400).json({
         success: false,
-        message: 'Only GitHub repositories are supported. URL format: https://github.com/{owner}/{repo}'
+        message: 'Invalid repositoryUrl format. Expected: https://{host}/{owner}/{repo}'
       });
     }
 
-    const [, owner, repo] = match;
+    const { repo } = parsedRepo;
     const commitHash = report.commitHash;
 
     // LCOV 中 iOS 文件路径可能是绝对路径，需转为相对路径
@@ -583,7 +583,7 @@ router.get('/:id/source', async (req: Request, res: Response) => {
     }
 
     // 依次尝试获取源码
-    const fetchFromGitHub = (url: string): Promise<string> => {
+    const fetchRawFile = (url: string, headers: Record<string, string>): Promise<string> => {
       return new Promise((resolve, reject) => {
         const makeRequest = (reqUrl: string, redirectCount: number = 0) => {
           if (redirectCount > 5) {
@@ -597,13 +597,13 @@ router.get('/:id/source', async (req: Request, res: Response) => {
             return;
           }
           const client = reqUrl.startsWith('https') ? https : http;
-          client.get(reqUrl, { headers: { 'User-Agent': 'CoveragePlatform' } }, (response) => {
+          client.get(reqUrl, { headers }, (response) => {
             if (response.statusCode && response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
               makeRequest(response.headers.location, redirectCount + 1);
               return;
             }
             if (response.statusCode !== 200) {
-              reject(new Error(`GitHub returned ${response.statusCode}`));
+              reject(new Error(`${parsedRepo.provider} returned ${response.statusCode}`));
               return;
             }
             let data = '';
@@ -618,9 +618,9 @@ router.get('/:id/source', async (req: Request, res: Response) => {
 
     let sourceCode: string | null = null;
     for (const candidate of pathCandidates) {
-      const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${commitHash}/${candidate}`;
+      const { url: rawUrl, headers } = buildRawFileRequest(parsedRepo, commitHash, candidate, project.accessToken);
       try {
-        sourceCode = await fetchFromGitHub(rawUrl);
+        sourceCode = await fetchRawFile(rawUrl, headers);
         break;
       } catch {
         continue;

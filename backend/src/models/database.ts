@@ -193,6 +193,7 @@ export class MongoDatabase {
       name: doc.name,
       platform: doc.platform,
       repositoryUrl: doc.repositoryUrl,
+      accessToken: doc.accessToken,
       createdAt: doc.createdAt.toISOString(),
       updatedAt: doc.updatedAt.toISOString()
     };

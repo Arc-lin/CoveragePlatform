@@ -5,6 +5,7 @@ export interface IProject extends Document {
   name: string;
   platform: 'ios' | 'android' | 'python';
   repositoryUrl?: string;
+  accessToken?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -72,6 +73,7 @@ const ProjectSchema = new Schema<IProject>({
   name: { type: String, required: true },
   platform: { type: String, required: true, enum: ['ios', 'android', 'python'] },
   repositoryUrl: { type: String },
+  accessToken: { type: String },
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });

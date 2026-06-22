@@ -4,6 +4,8 @@ export interface Project {
   name: string;
   platform: 'ios' | 'android' | 'python';
   repositoryUrl?: string;
+  // 私有仓库源码拉取用的访问令牌（GitHub PAT / GitLab PRIVATE-TOKEN / Gitee access_token / Bitbucket Bearer token）
+  accessToken?: string;
   createdAt: string;
   updatedAt: string;
 }

@@ -1,7 +1,14 @@
 import { Router, Request, Response } from 'express';
 import { mongoDb } from '../models/database';
+import { Project } from '../types';
 
 const router = Router();
+
+// accessToken 是敏感凭据，列表/详情接口不直接返回原值，只返回是否已配置
+function sanitizeProject(project: Project) {
+  const { accessToken, ...rest } = project;
+  return { ...rest, hasAccessToken: !!accessToken };
+}
 
 // 获取所有项目
 router.get('/', async (req: Request, res: Response) => {
@@ -17,7 +24,7 @@ router.get('/', async (req: Request, res: Response) => {
       projects = await mongoDb.getAllProjects();
     }
 
-    res.json({ success: true, data: projects });
+    res.json({ success: true, data: projects.map(sanitizeProject) });
   } catch (error) {
     res.status(500).json({
       success: false,
@@ -30,7 +37,7 @@ router.get('/', async (req: Request, res: Response) => {
 // 创建项目
 router.post('/', async (req: Request, res: Response) => {
   try {
-    const { name, platform, repositoryUrl } = req.body;
+    const { name, platform, repositoryUrl, accessToken } = req.body;
 
     if (!name || !platform || !repositoryUrl) {
       return res.status(400).json({
@@ -49,10 +56,11 @@ router.post('/', async (req: Request, res: Response) => {
     const project = await mongoDb.createProject({
       name,
       platform,
-      repositoryUrl
+      repositoryUrl,
+      accessToken
     });
 
-    res.status(201).json({ success: true, data: project });
+    res.status(201).json({ success: true, data: sanitizeProject(project) });
   } catch (error) {
     res.status(500).json({
       success: false,
@@ -75,7 +83,7 @@ router.get('/:id', async (req: Request, res: Response) => {
       });
     }
 
-    res.json({ success: true, data: project });
+    res.json({ success: true, data: sanitizeProject(project) });
   } catch (error) {
     res.status(500).json({
       success: false,
@@ -89,13 +97,15 @@ router.get('/:id', async (req: Request, res: Response) => {
 router.put('/:id', async (req: Request, res: Response) => {
   try {
     const id = req.params.id;
-    const { name, platform, repositoryUrl } = req.body;
+    const { name, platform, repositoryUrl, accessToken } = req.body;
 
-    const project = await mongoDb.updateProject(id, {
-      name,
-      platform,
-      repositoryUrl
-    });
+    const updates: Partial<Project> = { name, platform, repositoryUrl };
+    // 只有显式传了 accessToken 才更新，避免编辑表单留空时把已保存的 token 清掉
+    if (accessToken !== undefined && accessToken !== '') {
+      updates.accessToken = accessToken;
+    }
+
+    const project = await mongoDb.updateProject(id, updates);
 
     if (!project) {
       return res.status(404).json({
@@ -104,7 +114,7 @@ router.put('/:id', async (req: Request, res: Response) => {
       });
     }
 
-    res.json({ success: true, data: project });
+    res.json({ success: true, data: sanitizeProject(project) });
   } catch (error) {
     res.status(500).json({
       success: false,

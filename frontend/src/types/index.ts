@@ -3,6 +3,7 @@ export interface Project {
   name: string;
   platform: 'ios' | 'android' | 'python';
   repositoryUrl?: string;
+  hasAccessToken?: boolean;
   createdAt: string;
   updatedAt: string;
 }
