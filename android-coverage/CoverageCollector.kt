@@ -26,9 +26,13 @@ import java.util.concurrent.atomic.AtomicLong
  * Android 代码覆盖率收集器（支持自动上传）
  *
  * 使用方法:
- * 1. 在 Application.onCreate() 中调用 CoverageCollector.init(this, config)
- * 2. 在 build.gradle 中开启 testCoverageEnabled true
- * 3. App 进入后台或退出时，自动保存覆盖率数据并上传到平台
+ * 1. 在平台创建好 Build（POST /api/builds，上传 classfiles.zip + projectId + commitHash +
+ *    branch + 可选 gitDiff），拿到 buildId——commitHash/branch/gitDiff 都在这一步定，App 侧
+ *    不需要再传
+ * 2. 在 Application.onCreate() 中调用 CoverageCollector.init(this, config)，config 里只需要
+ *    baseUrl + buildId
+ * 3. 在 build.gradle 中开启 testCoverageEnabled true
+ * 4. App 进入后台或退出时，自动保存覆盖率数据并上传到平台
  *
  * 依赖配置:
  * - build.gradle 中需要配置 testCoverageEnabled true
@@ -45,12 +49,7 @@ import java.util.concurrent.atomic.AtomicLong
  *             uploadConfig = UploadConfig(
  *                 // ⚠️ Android 9+ 默认禁止明文 HTTP，生产环境请使用 https://
  *                 baseUrl = "https://coverage-platform.internal",
- *                 projectId = "android-app",
- *                 apiKey = "your-api-key"
- *             ),
- *             gitInfo = GitInfo(
- *                 commitHash = "abc123",  // 可从 CI 环境变量获取
- *                 branch = "main"
+ *                 buildId = "在平台创建 Build 后拿到的 buildId"
  *             )
  *         )
  *     }
@@ -76,26 +75,14 @@ class CoverageCollector {
         @Volatile
         private var uploadConfig: UploadConfig? = null
 
-        @Volatile
-        private var gitInfo: GitInfo? = null
-
         // 协程作用域，用于后台上传
         private val uploadScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-
-        /**
-         * Git 信息
-         */
-        data class GitInfo(
-            val commitHash: String,
-            val branch: String
-        )
 
         /**
          * 初始化配置
          */
         data class InitConfig(
             val uploadConfig: UploadConfig? = null,
-            val gitInfo: GitInfo? = null,
             val autoUpload: Boolean = true  // 是否自动上传
         )
 
@@ -104,21 +91,18 @@ class CoverageCollector {
          *
          * @param application Application 实例
          * @param uploadConfig 上传配置（可选，不传则不自动上传）
-         * @param gitInfo Git 信息（可选，建议从 CI 环境变量获取）
          * @param autoUpload 是否在 dump 后自动上传
          */
         @JvmStatic
         fun init(
             application: Application,
             uploadConfig: UploadConfig? = null,
-            gitInfo: GitInfo? = null,
             autoUpload: Boolean = true
         ) {
             // compareAndSet 保证原子性：只有第一次调用能进入，防止竞态导致重复注册
             if (!isInitialized.compareAndSet(false, true)) return
 
             this.uploadConfig = uploadConfig
-            this.gitInfo = gitInfo
 
             // 如果有上传配置，初始化上传器
             uploadConfig?.let { config ->
@@ -140,18 +124,8 @@ class CoverageCollector {
             init(
                 application = application,
                 uploadConfig = config.uploadConfig,
-                gitInfo = config.gitInfo,
                 autoUpload = config.autoUpload
             )
-        }
-
-        /**
-         * 更新 Git 信息（可在运行时更新，如从 CI 环境变量获取）
-         */
-        @JvmStatic
-        fun updateGitInfo(commitHash: String, branch: String) {
-            this.gitInfo = GitInfo(commitHash, branch)
-            log("Git info updated: commit=$commitHash, branch=$branch")
         }
 
         /**
@@ -249,16 +223,10 @@ class CoverageCollector {
          * 手动上传覆盖率文件
          *
          * @param coverageFile 覆盖率文件
-         * @param commitHash Git commit hash（可选，默认使用初始化时的配置）
-         * @param branch Git 分支（可选，默认使用初始化时的配置）
          * @return 上传结果
          */
         @JvmStatic
-        suspend fun uploadCoverage(
-            coverageFile: File,
-            commitHash: String? = null,
-            branch: String? = null
-        ): UploadResult {
+        suspend fun uploadCoverage(coverageFile: File): UploadResult {
             if (!CoverageUploader.isInitialized()) {
                 return UploadResult(
                     success = false,
@@ -266,14 +234,7 @@ class CoverageCollector {
                 )
             }
 
-            val hash = commitHash ?: gitInfo?.commitHash ?: "unknown"
-            val branchName = branch ?: gitInfo?.branch ?: "unknown"
-
-            return CoverageUploader.getInstance().uploadCoverage(
-                coverageFile = coverageFile,
-                commitHash = hash,
-                branch = branchName
-            )
+            return CoverageUploader.getInstance().uploadCoverage(coverageFile)
         }
 
         /**

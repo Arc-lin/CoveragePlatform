@@ -20,7 +20,15 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * 覆盖率数据上传器
  *
- * 用于将覆盖率数据上传到覆盖率平台
+ * 用于把 CoverageCollector 落盘的 .ec 文件上传到 CoveragePlatform。
+ *
+ * 走的是 `POST /api/builds/:buildId/raw-coverage`（服务端按 buildId 自动合并多次上传、计算增量
+ * 覆盖率），而不是 `/api/upload/coverage`（那个接口只接受已转换好的 JaCoCo XML，原始 .ec 文件会被
+ * 直接拒绝）。
+ *
+ * 使用前提：buildId 需要提前在平台创建好（`POST /api/builds`，上传 classfiles.zip + projectId +
+ * commitHash + branch），commitHash/branch/gitDiff 都是创建 Build 时定的，上传 .ec 这一步
+ * 不需要再传——所以这里的初始化参数只有 `baseUrl` 和 `buildId`，不需要 projectId/commitHash/branch。
  *
  * 依赖配置:
  * - 需要在 build.gradle 中添加 OkHttp 依赖:
@@ -34,19 +42,14 @@ import java.util.concurrent.atomic.AtomicBoolean
  * CoverageUploader.initOnce(application, UploadConfig(
  *     // ⚠️ Android 9+ 默认禁止明文 HTTP，生产环境请使用 https://
  *     baseUrl = "https://coverage-platform.internal",
- *     projectId = "android-app",
- *     apiKey = "your-api-key"  // 可选
+ *     buildId = "在平台创建 Build 后拿到的 buildId"
  * ))
  *
  * // 上传（在协程中调用）
  * lifecycleScope.launch {
  *     val latestFile = CoverageCollector.getLatestCoverageFile(context)
  *     if (latestFile != null) {
- *         val result = CoverageUploader.getInstance().uploadCoverage(
- *             coverageFile = latestFile,
- *             commitHash = "abc123",
- *             branch = "main"
- *         )
+ *         val result = CoverageUploader.getInstance().uploadCoverage(latestFile)
  *         if (result.success) {
  *             Log.d("Upload", "Success: ${result.reportId}")
  *         }
@@ -57,8 +60,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class CoverageUploader private constructor(
     private val context: Context,
     private val baseUrl: String,
-    private val projectId: String,
-    private val apiKey: String?
+    private val buildId: String
 ) {
 
     private val client = OkHttpClient.Builder()
@@ -71,13 +73,11 @@ class CoverageUploader private constructor(
      * 上传配置
      *
      * @param baseUrl 平台服务地址（如 https://coverage-platform.internal；Android 9+ 禁止明文 HTTP）
-     * @param projectId 项目 ID
-     * @param apiKey API 密钥（可选，用于鉴权）
+     * @param buildId 提前在平台创建好的 Build ID（POST /api/builds 的返回值）
      */
     data class UploadConfig(
         val baseUrl: String,
-        val projectId: String,
-        val apiKey: String? = null
+        val buildId: String
     )
 
     /**
@@ -112,8 +112,7 @@ class CoverageUploader private constructor(
             instance = CoverageUploader(
                 application.applicationContext,
                 config.baseUrl,
-                config.projectId,
-                config.apiKey
+                config.buildId
             )
         }
 
@@ -137,18 +136,14 @@ class CoverageUploader private constructor(
     }
 
     /**
-     * 上传覆盖率文件
+     * 上传覆盖率文件（.ec）
      *
      * @param coverageFile 覆盖率文件 (.ec)
-     * @param commitHash Git commit hash
-     * @param branch Git 分支名
-     * @param metadata 额外元数据（如测试类型、环境等）
+     * @param testerName 测试人员标识（可选，用于服务端记录是谁触发的这次上传）
      */
     suspend fun uploadCoverage(
         coverageFile: File,
-        commitHash: String,
-        branch: String,
-        metadata: Map<String, String> = emptyMap()
+        testerName: String? = null
     ): UploadResult = withContext(Dispatchers.IO) {
         try {
             if (!coverageFile.exists()) {
@@ -158,36 +153,23 @@ class CoverageUploader private constructor(
                 )
             }
 
-            val requestBody = MultipartBody.Builder()
+            val bodyBuilder = MultipartBody.Builder()
                 .setType(MultipartBody.FORM)
                 .addFormDataPart(
                     "file",
                     coverageFile.name,
                     coverageFile.asRequestBody("application/octet-stream".toMediaTypeOrNull())
                 )
-                .addFormDataPart("projectId", projectId)
-                .addFormDataPart("platform", "android")
-                .addFormDataPart("commitHash", commitHash)
-                .addFormDataPart("branch", branch)
-                .addFormDataPart("appVersion", getAppVersion())
                 .addFormDataPart("deviceInfo", getDeviceInfo())
-                .addFormDataPart("fileSize", coverageFile.length().toString())
-                .apply {
-                    metadata.forEach { (key, value) ->
-                        addFormDataPart(key, value)
-                    }
-                }
+
+            testerName?.let { bodyBuilder.addFormDataPart("testerName", it) }
+
+            val request = Request.Builder()
+                .url("${baseUrl.trimEnd('/')}/api/builds/$buildId/raw-coverage")
+                .post(bodyBuilder.build())
                 .build()
 
-            val requestBuilder = Request.Builder()
-                .url("${baseUrl.trimEnd('/')}/api/upload/coverage")
-                .post(requestBody)
-
-            apiKey?.let {
-                requestBuilder.addHeader("X-API-Key", it)
-            }
-
-            val response = client.newCall(requestBuilder.build()).execute()
+            val response = client.newCall(request).execute()
 
             response.use {
                 if (it.isSuccessful) {
@@ -217,89 +199,16 @@ class CoverageUploader private constructor(
      * 批量上传多个覆盖率文件（分批并发，每批最多 3 个）
      *
      * @param coverageFiles 覆盖率文件列表
-     * @param commitHash Git commit hash
-     * @param branch Git 分支名
      * @return 上传结果列表
      */
-    suspend fun uploadMultiple(
-        coverageFiles: List<File>,
-        commitHash: String,
-        branch: String
-    ): List<UploadResult> = coroutineScope {
+    suspend fun uploadMultiple(coverageFiles: List<File>): List<UploadResult> = coroutineScope {
         coverageFiles
             .chunked(3)  // 每批最多 3 个并发，避免耗尽连接池
             .flatMap { batch ->
                 batch.map { file ->
-                    async { uploadCoverage(file, commitHash, branch) }
+                    async { uploadCoverage(file) }
                 }.map { it.await() }
             }
-    }
-
-    /**
-     * 上传 JSON 格式的增量覆盖率报告
-     *
-     * @param reportFile JSON 报告文件
-     * @param commitHash Git commit hash
-     * @param branch Git 分支名
-     */
-    suspend fun uploadReport(
-        reportFile: File,
-        commitHash: String,
-        branch: String
-    ): UploadResult = withContext(Dispatchers.IO) {
-        try {
-            if (!reportFile.exists()) {
-                return@withContext UploadResult(
-                    success = false,
-                    message = "Report file not found: ${reportFile.absolutePath}"
-                )
-            }
-
-            val requestBody = MultipartBody.Builder()
-                .setType(MultipartBody.FORM)
-                .addFormDataPart(
-                    "report",
-                    reportFile.name,
-                    reportFile.asRequestBody("application/json".toMediaTypeOrNull())
-                )
-                .addFormDataPart("projectId", projectId)
-                .addFormDataPart("platform", "android")
-                .addFormDataPart("commitHash", commitHash)
-                .addFormDataPart("branch", branch)
-                .build()
-
-            val requestBuilder = Request.Builder()
-                .url("${baseUrl.trimEnd('/')}/api/upload/report")
-                .post(requestBody)
-
-            apiKey?.let {
-                requestBuilder.addHeader("X-API-Key", it)
-            }
-
-            val response = client.newCall(requestBuilder.build()).execute()
-
-            response.use {
-                if (it.isSuccessful) {
-                    val responseBody = it.body?.string()
-                    parseUploadResult(responseBody, "Report uploaded")
-                } else {
-                    UploadResult(
-                        success = false,
-                        message = "Upload failed: HTTP ${it.code} - ${it.message}"
-                    )
-                }
-            }
-        } catch (e: IOException) {
-            UploadResult(
-                success = false,
-                message = "Network error: ${e.message}"
-            )
-        } catch (e: Exception) {
-            UploadResult(
-                success = false,
-                message = "Error: ${e.message}"
-            )
-        }
     }
 
     /**
@@ -315,10 +224,11 @@ class CoverageUploader private constructor(
         }
         return try {
             val json = JSONObject(responseBody)
+            val data = json.optJSONObject("data")
             UploadResult(
                 success = true,
                 message = json.optString("message", defaultMessage),
-                reportId = json.optString("reportId").takeIf { it.isNotEmpty() }
+                reportId = data?.optString("reportId")?.takeIf { it.isNotEmpty() }
             )
         } catch (e: JSONException) {
             // 服务端返回 HTTP 2xx 但内容非 JSON（如 CDN 错误页），视为上传失败并记录原始响应
@@ -326,21 +236,6 @@ class CoverageUploader private constructor(
                 success = false,
                 message = "Server returned non-JSON response: ${responseBody.take(200)}"
             )
-        }
-    }
-
-    private fun getAppVersion(): String {
-        return try {
-            val packageInfo = context.packageManager.getPackageInfo(context.packageName, 0)
-            val versionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                packageInfo.longVersionCode
-            } else {
-                @Suppress("DEPRECATION")
-                packageInfo.versionCode.toLong()
-            }
-            "${packageInfo.versionName ?: "unknown"}($versionCode)"
-        } catch (e: Exception) {
-            "unknown"
         }
     }
 
