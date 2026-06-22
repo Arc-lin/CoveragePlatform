@@ -249,17 +249,34 @@ export class MongoDatabase {
     return build ? this.toBuild(build) : undefined;
   }
 
+  // 同一个 commit 可能被 CI 重复构建多次，按 (projectId, commitHash) 复用已有 Build
+  async getBuildByProjectAndCommit(projectId: string, commitHash: string): Promise<Build | undefined> {
+    const build = await BuildModel.findOne({ projectId, commitHash }).sort({ createdAt: -1 });
+    return build ? this.toBuild(build) : undefined;
+  }
+
   async getBuildsByProject(projectId: string): Promise<Build[]> {
     const builds = await BuildModel.find({ projectId }).sort({ createdAt: -1 });
     return builds.map(b => this.toBuild(b));
   }
 
   async updateBuild(id: string, updates: Partial<Build>): Promise<Build | undefined> {
-    const build = await BuildModel.findByIdAndUpdate(
-      id,
-      { ...updates, updatedAt: new Date() },
-      { new: true }
-    );
+    // Mongoose 在 $set 里会直接丢弃值为 undefined 的 key（不会 unset 掉已有字段），
+    // 显式传 undefined 的字段要走 $unset 才能真正清空（比如复用 Build 时清掉旧的 mergedReportId）
+    const setFields: Record<string, unknown> = { updatedAt: new Date() };
+    const unsetFields: Record<string, ''> = {};
+    for (const [key, value] of Object.entries(updates)) {
+      if (value === undefined) {
+        unsetFields[key] = '';
+      } else {
+        setFields[key] = value;
+      }
+    }
+    const update: Record<string, unknown> = { $set: setFields };
+    if (Object.keys(unsetFields).length > 0) {
+      update.$unset = unsetFields;
+    }
+    const build = await BuildModel.findByIdAndUpdate(id, update, { new: true });
     return build ? this.toBuild(build) : undefined;
   }
 

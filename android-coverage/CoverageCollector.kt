@@ -26,13 +26,14 @@ import java.util.concurrent.atomic.AtomicLong
  * Android 代码覆盖率收集器（支持自动上传）
  *
  * 使用方法:
- * 1. 在平台创建好 Build（POST /api/builds，上传 classfiles.zip + projectId + commitHash +
- *    branch + 可选 gitDiff），拿到 buildId——commitHash/branch/gitDiff 都在这一步定，App 侧
- *    不需要再传
+ * 1. build.gradle 里加 buildConfigField 注入 GIT_COMMIT_HASH（`git rev-parse HEAD` 自动取，
+ *    见接入文档第 2.4 节），同时 CI/本机用同一个 commitHash 调 POST /api/builds 上传
+ *    classfiles.zip，建好 Build——这一步不需要 App 知道 buildId，只要 commitHash 对得上
  * 2. 在 Application.onCreate() 中调用 CoverageCollector.init(this, config)，config 里只需要
- *    baseUrl + buildId
+ *    baseUrl + projectId
  * 3. 在 build.gradle 中开启 testCoverageEnabled true
- * 4. App 进入后台或退出时，自动保存覆盖率数据并上传到平台
+ * 4. App 进入后台或退出时，自动保存覆盖率数据，首次上传时用 (projectId, commitHash) 换 buildId
+ *    并缓存，之后正常上传到平台
  *
  * 依赖配置:
  * - build.gradle 中需要配置 testCoverageEnabled true
@@ -49,7 +50,7 @@ import java.util.concurrent.atomic.AtomicLong
  *             uploadConfig = UploadConfig(
  *                 // ⚠️ Android 9+ 默认禁止明文 HTTP，生产环境请使用 https://
  *                 baseUrl = "https://coverage-platform.internal",
- *                 buildId = "在平台创建 Build 后拿到的 buildId"
+ *                 projectId = "在平台创建项目后拿到的 projectId"
  *             )
  *         )
  *     }

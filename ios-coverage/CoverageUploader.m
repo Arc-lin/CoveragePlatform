@@ -7,11 +7,13 @@
 #import "CoverageCollector.h"
 
 static NSString *s_baseURL = nil;
+static NSString *s_projectId = nil;
+static NSString *s_commitHash = nil;
 static NSString *s_buildId = nil;
 
 @implementation CoverageUploader
 
-+ (void)initWithBaseURL:(NSString *)baseURL buildId:(NSString *)buildId {
++ (void)initWithBaseURL:(NSString *)baseURL projectId:(NSString *)projectId {
     if (s_baseURL != nil) {
         return; // 幂等，已初始化过就不再重复设置
     }
@@ -21,11 +23,30 @@ static NSString *s_buildId = nil;
     } else {
         s_baseURL = [baseURL copy];
     }
-    s_buildId = [buildId copy];
+    s_projectId = [projectId copy];
+    s_commitHash = [self readCommitHashFromBundle];
+    if (s_commitHash == nil) {
+        NSLog(@"[CoverageUploader] WARNING: GitCommitHash not found in CoverageInfo.plist. "
+              "Add the Xcode Build Phase described in the integration guide, otherwise uploads will be skipped.");
+    }
 }
 
 + (BOOL)isInitialized {
-    return s_baseURL != nil && s_buildId != nil;
+    return s_baseURL != nil && s_projectId != nil && s_commitHash != nil;
+}
+
+/**
+ * 从 CoverageInfo.plist 读取编译时写入的 GitCommitHash。
+ * 这个 plist 由 Xcode Build Phase 在编译时生成（见接入文档第 2.4 节），不需要开发者手动维护。
+ */
++ (nullable NSString *)readCommitHashFromBundle {
+    NSString *plistPath = [[NSBundle mainBundle] pathForResource:@"CoverageInfo" ofType:@"plist"];
+    if (plistPath == nil) {
+        return nil;
+    }
+    NSDictionary *plist = [NSDictionary dictionaryWithContentsOfFile:plistPath];
+    NSString *commitHash = plist[@"GitCommitHash"];
+    return [commitHash isKindOfClass:[NSString class]] && commitHash.length > 0 ? commitHash : nil;
 }
 
 + (void)uploadLatestCoverageFileWithCompletion:(CoverageUploadCompletion)completion {
@@ -45,12 +66,67 @@ static NSString *s_buildId = nil;
     if (![self isInitialized]) {
         if (completion) {
             dispatch_async(dispatch_get_main_queue(), ^{
-                completion(NO, @"CoverageUploader not initialized. Call +initWithBaseURL:buildId: first.", nil);
+                completion(NO, @"CoverageUploader not initialized, or GitCommitHash missing from bundle.", nil);
             });
         }
         return;
     }
 
+    if (s_buildId != nil) {
+        [self performUploadCoverageFile:filePath completion:completion];
+        return;
+    }
+
+    // 第一次上传：用 commitHash 换 buildId，换到之后缓存，后续上传不用再换
+    [self resolveBuildIdWithCompletion:^(NSString * _Nullable buildId, NSString * _Nullable errorMessage) {
+        if (buildId == nil) {
+            if (completion) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    completion(NO, errorMessage ?: @"Failed to resolve buildId", nil);
+                });
+            }
+            return;
+        }
+        s_buildId = buildId;
+        [self performUploadCoverageFile:filePath completion:completion];
+    }];
+}
+
++ (void)resolveBuildIdWithCompletion:(void (^)(NSString * _Nullable buildId, NSString * _Nullable errorMessage))completion {
+    NSString *urlString = [NSString stringWithFormat:@"%@/api/builds/resolve?projectId=%@&commitHash=%@",
+                            s_baseURL,
+                            [self urlEncode:s_projectId],
+                            [self urlEncode:s_commitHash]];
+    NSURL *url = [NSURL URLWithString:urlString];
+
+    NSURLSessionDataTask *task = [[NSURLSession sharedSession] dataTaskWithURL:url
+        completionHandler:^(NSData * _Nullable data, NSURLResponse * _Nullable response, NSError * _Nullable error) {
+            if (error != nil) {
+                completion(nil, [NSString stringWithFormat:@"Network error resolving buildId: %@", error.localizedDescription]);
+                return;
+            }
+            NSDictionary *json = data.length > 0 ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+            NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)response;
+            if (httpResponse.statusCode != 200 || json == nil) {
+                NSString *message = [json[@"message"] isKindOfClass:[NSString class]]
+                    ? json[@"message"]
+                    : [NSString stringWithFormat:@"Resolve failed: HTTP %ld", (long)httpResponse.statusCode];
+                completion(nil, message);
+                return;
+            }
+            NSDictionary *resultData = [json[@"data"] isKindOfClass:[NSDictionary class]] ? json[@"data"] : nil;
+            NSString *buildId = [resultData[@"buildId"] isKindOfClass:[NSString class]] ? resultData[@"buildId"] : nil;
+            completion(buildId, buildId == nil ? @"Resolve response missing buildId" : nil);
+        }];
+    [task resume];
+}
+
++ (NSString *)urlEncode:(NSString *)value {
+    NSCharacterSet *allowed = [NSCharacterSet URLQueryAllowedCharacterSet];
+    return [value stringByAddingPercentEncodingWithAllowedCharacters:allowed] ?: value;
+}
+
++ (void)performUploadCoverageFile:(NSString *)filePath completion:(CoverageUploadCompletion)completion {
     NSFileManager *fileManager = [NSFileManager defaultManager];
     if (![fileManager fileExistsAtPath:filePath]) {
         if (completion) {

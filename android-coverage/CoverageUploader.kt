@@ -26,15 +26,18 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 覆盖率），而不是 `/api/upload/coverage`（那个接口只接受已转换好的 JaCoCo XML，原始 .ec 文件会被
  * 直接拒绝）。
  *
- * 使用前提：buildId 需要提前在平台创建好（`POST /api/builds`，上传 classfiles.zip + projectId +
- * commitHash + branch），commitHash/branch/gitDiff 都是创建 Build 时定的，上传 .ec 这一步
- * 不需要再传——所以这里的初始化参数只有 `baseUrl` 和 `buildId`，不需要 projectId/commitHash/branch。
+ * buildId 不需要手动维护：初始化只需要传 baseUrl + projectId，commitHash 由 build.gradle 在编译时
+ * 通过 buildConfigField 注入（见接入文档第 2.4 节，`git rev-parse HEAD` 自动取，不需要手动改代码）。
+ * 首次上传时用 `(projectId, commitHash)` 调 `GET /api/builds/resolve` 换成 buildId 并缓存，后续
+ * 上传复用缓存。这要求 CI/本机编译时已经用同一个 commitHash 调用过 `POST /api/builds` 上传过
+ * classfiles.zip——否则 resolve 会 404，这是预期行为，说明这次构建还没有可用于解析覆盖率数据的
+ * 编译产物。
  *
  * 依赖配置:
- * - 需要在 build.gradle 中添加 OkHttp 依赖:
- *   implementation 'com.squareup.okhttp3:okhttp:4.12.0'
- * - 需要添加 Kotlin 协程依赖:
- *   implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
+ * - build.gradle 中需要配置 testCoverageEnabled true，且注入 BuildConfig.GIT_COMMIT_HASH
+ * - JaCoCo 版本建议 0.8.11+
+ * - OkHttp: implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+ * - Kotlin 协程: implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
  *
  * 使用示例:
  * ```kotlin
@@ -42,7 +45,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * CoverageUploader.initOnce(application, UploadConfig(
  *     // ⚠️ Android 9+ 默认禁止明文 HTTP，生产环境请使用 https://
  *     baseUrl = "https://coverage-platform.internal",
- *     buildId = "在平台创建 Build 后拿到的 buildId"
+ *     projectId = "在平台创建项目后拿到的 projectId"
  * ))
  *
  * // 上传（在协程中调用）
@@ -60,7 +63,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 class CoverageUploader private constructor(
     private val context: Context,
     private val baseUrl: String,
-    private val buildId: String
+    private val projectId: String,
+    private val commitHash: String?
 ) {
 
     private val client = OkHttpClient.Builder()
@@ -69,15 +73,18 @@ class CoverageUploader private constructor(
         .readTimeout(60, TimeUnit.SECONDS)
         .build()
 
+    @Volatile
+    private var cachedBuildId: String? = null
+
     /**
      * 上传配置
      *
      * @param baseUrl 平台服务地址（如 https://coverage-platform.internal；Android 9+ 禁止明文 HTTP）
-     * @param buildId 提前在平台创建好的 Build ID（POST /api/builds 的返回值）
+     * @param projectId 提前在平台创建好的项目 ID
      */
     data class UploadConfig(
         val baseUrl: String,
-        val buildId: String
+        val projectId: String
     )
 
     /**
@@ -103,17 +110,45 @@ class CoverageUploader private constructor(
         /**
          * 初始化上传器（幂等，只初始化一次，防止重复调用泄漏 OkHttpClient）
          *
+         * commitHash 自动从 `BuildConfig.GIT_COMMIT_HASH` 读取（需要在 build.gradle 注入，
+         * 见接入文档第 2.4 节）；读不到则记录警告日志，上传会全部跳过。
+         *
          * @param application Application 实例（避免 Context 泄漏，内部使用 applicationContext）
          * @param config 上传配置
+         * @param commitHash 可选：手动传入 commitHash（不传则尝试反射读取调用方 BuildConfig）
          */
         @JvmStatic
-        fun initOnce(application: Application, config: UploadConfig) {
+        @JvmOverloads
+        fun initOnce(application: Application, config: UploadConfig, commitHash: String? = null) {
             if (!initLock.compareAndSet(false, true)) return
+            val resolvedCommitHash = commitHash ?: readGitCommitHashFromBuildConfig(application)
+            if (resolvedCommitHash == null) {
+                android.util.Log.w(
+                    "CoverageUploader",
+                    "GIT_COMMIT_HASH not found in BuildConfig. Add buildConfigField injection " +
+                        "described in the integration guide, otherwise uploads will be skipped."
+                )
+            }
             instance = CoverageUploader(
                 application.applicationContext,
                 config.baseUrl,
-                config.buildId
+                config.projectId,
+                resolvedCommitHash
             )
+        }
+
+        /**
+         * 反射读取调用方 App 的 `<applicationId>.BuildConfig.GIT_COMMIT_HASH`
+         * （SDK 自己的 BuildConfig 里没有这个字段，必须读宿主 App 的）
+         */
+        private fun readGitCommitHashFromBuildConfig(application: Application): String? {
+            return try {
+                val clazz = Class.forName("${application.packageName}.BuildConfig")
+                val field = clazz.getField("GIT_COMMIT_HASH")
+                field.get(null) as? String
+            } catch (e: Exception) {
+                null
+            }
         }
 
         /**
@@ -145,6 +180,21 @@ class CoverageUploader private constructor(
         coverageFile: File,
         testerName: String? = null
     ): UploadResult = withContext(Dispatchers.IO) {
+        if (commitHash == null) {
+            return@withContext UploadResult(
+                success = false,
+                message = "GIT_COMMIT_HASH not available, skipping upload"
+            )
+        }
+
+        val buildId = cachedBuildId ?: resolveBuildId().also {
+            if (it != null) cachedBuildId = it
+        } ?: return@withContext UploadResult(
+            success = false,
+            message = "No build found for commit $commitHash. " +
+                "Make sure CI called POST /api/builds for this commit first."
+        )
+
         try {
             if (!coverageFile.exists()) {
                 return@withContext UploadResult(
@@ -192,6 +242,25 @@ class CoverageUploader private constructor(
                 success = false,
                 message = "Error: ${e.message}"
             )
+        }
+    }
+
+    /**
+     * 用 (projectId, commitHash) 换 buildId。第一次上传时调用，换到之后由调用方缓存。
+     */
+    private fun resolveBuildId(): String? {
+        return try {
+            val url = "${baseUrl.trimEnd('/')}/api/builds/resolve" +
+                "?projectId=${java.net.URLEncoder.encode(projectId, "UTF-8")}" +
+                "&commitHash=${java.net.URLEncoder.encode(commitHash, "UTF-8")}"
+            val request = Request.Builder().url(url).get().build()
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return null
+                val json = JSONObject(response.body?.string() ?: return null)
+                json.optJSONObject("data")?.optString("buildId")?.takeIf { it.isNotEmpty() }
+            }
+        } catch (e: Exception) {
+            null
         }
     }
 

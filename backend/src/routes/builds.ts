@@ -288,14 +288,31 @@ router.post('/', binaryUpload.single('binary'), async (req: Request, res: Respon
       });
     }
 
-    // 先创建一个临时 ID 用于目录命名
-    const buildId = uuidv4().replace(/-/g, '').substring(0, 24);
+    // 同一个 commit 可能被 CI 重复构建多次（比如重新打包、换签名），
+    // 按 (projectId, commitHash) 复用已有 Build，而不是每次都新建一条、产生新的 buildId——
+    // 这样 App 侧只要知道 commitHash（编译时打包进 bundle，不需要手动维护 buildId）就能找到正确的 Build。
+    const existingBuild = await mongoDb.getBuildByProjectAndCommit(projectId, commitHash);
+
+    const buildId = existingBuild
+      ? existingBuild.id
+      : uuidv4().replace(/-/g, '').substring(0, 24);
 
     // 创建 Build 目录结构
     const buildDir = path.join(__dirname, '../../builds', projectId, buildId);
     const binaryDir = path.join(buildDir, 'binary');
     const rawDir = path.join(buildDir, 'raw');
     const mergedDir = path.join(buildDir, 'merged');
+
+    if (existingBuild) {
+      // 复用已有 Build：旧的二进制、原始上传、合并结果都对应不上新二进制了，全部清空重来
+      fs.rmSync(binaryDir, { recursive: true, force: true });
+      fs.rmSync(rawDir, { recursive: true, force: true });
+      fs.rmSync(mergedDir, { recursive: true, force: true });
+      if (existingBuild.mergedReportId) {
+        await mongoDb.deleteFileCoveragesByReport(existingBuild.mergedReportId);
+        await mongoDb.deleteReport(existingBuild.mergedReportId);
+      }
+    }
     fs.mkdirSync(binaryDir, { recursive: true });
     fs.mkdirSync(rawDir, { recursive: true });
     fs.mkdirSync(mergedDir, { recursive: true });
@@ -322,17 +339,36 @@ router.post('/', binaryUpload.single('binary'), async (req: Request, res: Respon
       }
     }
 
-    // 创建 Build 记录
-    const build = await mongoDb.createBuild({
-      projectId,
-      platform: project.platform,
-      commitHash,
-      branch,
-      buildVersion,
-      gitDiff,
-      binaryPath: permanentBinaryPath,
-      status: 'ready'
-    });
+    // 创建或更新 Build 记录
+    let build: Build;
+    if (existingBuild) {
+      const updated = await mongoDb.updateBuild(buildId, {
+        branch,
+        buildVersion,
+        gitDiff,
+        binaryPath: permanentBinaryPath,
+        status: 'ready',
+        rawUploadCount: 0,
+        mergedReportId: undefined,
+        lastMergedAt: undefined,
+        errorMessage: undefined
+      } as Partial<Build>);
+      if (!updated) {
+        return res.status(500).json({ success: false, message: 'Failed to update existing build' });
+      }
+      build = updated;
+    } else {
+      build = await mongoDb.createBuild({
+        projectId,
+        platform: project.platform,
+        commitHash,
+        branch,
+        buildVersion,
+        gitDiff,
+        binaryPath: permanentBinaryPath,
+        status: 'ready'
+      });
+    }
 
     // 重命名目录以使用真实的 MongoDB _id
     const realBuildDir = path.join(__dirname, '../../builds', projectId, build.id);
@@ -628,6 +664,42 @@ router.get('/project/:projectId', async (req: Request, res: Response) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch builds',
+      error: (error as Error).message
+    });
+  }
+});
+
+// =====================================================
+// GET /api/builds/resolve?projectId=&commitHash= — SDK 按 commitHash 查找 buildId
+//
+// CI 编译时把 commitHash 打进 App bundle（iOS: CoverageInfo.plist / Android: BuildConfig），
+// SDK 运行时读出来调这个接口换成 buildId，不需要手动把 buildId 复制进源码。
+// 404 说明 CI 还没有为这个 commit 调用过 POST /api/builds 创建 Build（没有匹配的编译产物可用于
+// 解析覆盖率），SDK 应该跳过这次上传，而不是报错重试。
+// =====================================================
+router.get('/resolve', async (req: Request, res: Response) => {
+  try {
+    const { projectId, commitHash } = req.query;
+    if (!projectId || !commitHash) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required query params: projectId, commitHash'
+      });
+    }
+
+    const build = await mongoDb.getBuildByProjectAndCommit(projectId as string, commitHash as string);
+    if (!build) {
+      return res.status(404).json({
+        success: false,
+        message: 'No build found for this commit. Make sure CI called POST /api/builds for this commitHash first.'
+      });
+    }
+
+    res.json({ success: true, data: { buildId: build.id } });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Failed to resolve build',
       error: (error as Error).message
     });
   }

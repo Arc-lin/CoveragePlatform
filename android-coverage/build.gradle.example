@@ -24,8 +24,14 @@ android {
         targetSdk 34
         versionCode 1
         versionName "1.0"
-        
+
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+
+        // ⚠️ 必须是完整 commit hash（不能用 --short），要跟 CI 调 POST /api/builds 时传的
+        // commitHash 完全一致，否则 CoverageUploader 端 GET /api/builds/resolve 换不出 buildId
+        def gitHash = System.getenv("GIT_COMMIT_HASH") ?:
+            "git rev-parse HEAD".execute([], rootDir).text.trim()
+        buildConfigField "String", "GIT_COMMIT_HASH", "\"${gitHash}\""
     }
     
     buildTypes {
@@ -45,9 +51,14 @@ android {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
     }
-    
+
     kotlinOptions {
         jvmTarget = '1.8'
+    }
+
+    // AGP 8+ 需要显式开启才会生成 BuildConfig（GIT_COMMIT_HASH 字段依赖它）
+    buildFeatures {
+        buildConfig true
     }
 }
 

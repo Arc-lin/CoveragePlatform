@@ -139,6 +139,9 @@ const BuildSchema = new Schema<IBuild>({
 });
 
 BuildSchema.index({ projectId: 1, createdAt: -1 });
+// 同一个 commit 可能被 CI 重复构建多次（同一份代码、不同的打包批次），
+// 按 (projectId, commitHash) 查找已有 Build 用于复用/覆盖，而不是每次都新建一条
+BuildSchema.index({ projectId: 1, commitHash: 1 });
 
 // 原始覆盖率上传模型
 const RawUploadSchema = new Schema<IRawUpload>({
