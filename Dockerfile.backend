@@ -1,6 +1,6 @@
 FROM node:20-alpine
 
-RUN apk add --no-cache openjdk17-jre-headless curl
+RUN apk add --no-cache openjdk17-jre-headless curl llvm21
 
 WORKDIR /app
 

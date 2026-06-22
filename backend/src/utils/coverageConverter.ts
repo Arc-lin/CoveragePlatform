@@ -15,6 +15,33 @@ function getJavaBin(): string {
   return 'java';
 }
 
+// llvm-profdata/llvm-cov 是标准 LLVM 工具，不是 Xcode 专属——profraw/coverage-mapping
+// 格式实测可以被开源 LLVM（apk/apt 装的 llvmNN 包）正常解析，不需要 Xcode。
+// 优先用 xcrun（macOS 有 Xcode 时），找不到再去找 Linux 上 apk 装的 llvmNN/bin/ 目录。
+function findLLVMTool(toolName: 'llvm-profdata' | 'llvm-cov'): string {
+  try {
+    execSync(`xcrun ${toolName} -h`, { stdio: 'pipe', timeout: 5000 });
+    return `xcrun ${toolName}`;
+  } catch {
+    // 非 macOS 或没有 Xcode，继续往下找 Linux 上的开源 LLVM
+  }
+
+  try {
+    const usrLib = '/usr/lib';
+    const llvmDirs = fs.readdirSync(usrLib)
+      .filter(name => /^llvm\d+$/.test(name))
+      .sort((a, b) => parseInt(b.slice(4), 10) - parseInt(a.slice(4), 10)); // 取最高版本号优先
+    for (const dir of llvmDirs) {
+      const binPath = path.join(usrLib, dir, 'bin', toolName);
+      if (fs.existsSync(binPath)) return `"${binPath}"`;
+    }
+  } catch {
+    // /usr/lib 不存在或不可读，忽略，走兜底
+  }
+
+  return toolName; // 兜底：依赖 PATH（如果装的是无版本号后缀的 llvm-profdata/llvm-cov）
+}
+
 export async function withBuildLock(buildId: string, fn: () => Promise<void>): Promise<void> {
   const prev = buildLocks.get(buildId) || Promise.resolve();
   const current = prev.then(fn, fn);
@@ -31,11 +58,11 @@ export function checkToolAvailability(): { ios: boolean; android: boolean; error
   let android = true;
 
   try {
-    execSync('xcrun llvm-profdata -h', { stdio: 'pipe', timeout: 5000 });
-    execSync('xcrun llvm-cov -h', { stdio: 'pipe', timeout: 5000 });
+    execSync(`${findLLVMTool('llvm-profdata')} -h`, { stdio: 'pipe', timeout: 5000 });
+    execSync(`${findLLVMTool('llvm-cov')} -h`, { stdio: 'pipe', timeout: 5000 });
   } catch {
     ios = false;
-    errors.push('xcrun llvm-profdata/llvm-cov not available. iOS profraw conversion will not work. Install Xcode Command Line Tools.');
+    errors.push('llvm-profdata/llvm-cov not available. iOS profraw conversion will not work. Install Xcode Command Line Tools (macOS) or llvm (apt/apk install llvm).');
   }
 
   try {
@@ -75,11 +102,11 @@ export async function mergeIOSCoverage(
 
   // Step 1: 合并所有 profraw → profdata
   const quotedPaths = profrawPaths.map(p => `"${p}"`).join(' ');
-  const mergeCmd = `xcrun llvm-profdata merge -sparse ${quotedPaths} -o "${profdataPath}"`;
+  const mergeCmd = `${findLLVMTool('llvm-profdata')} merge -sparse ${quotedPaths} -o "${profdataPath}"`;
   execSync(mergeCmd, { timeout: 120000, stdio: 'pipe' });
 
   // Step 2: 导出 profdata → LCOV
-  const exportCmd = `xcrun llvm-cov export "${machoBinaryPath}" -instr-profile="${profdataPath}" -format=lcov`;
+  const exportCmd = `${findLLVMTool('llvm-cov')} export "${machoBinaryPath}" -instr-profile="${profdataPath}" -format=lcov`;
   const lcovOutput = execSync(exportCmd, { timeout: 120000, maxBuffer: 50 * 1024 * 1024 });
   fs.writeFileSync(lcovPath, lcovOutput);
 
