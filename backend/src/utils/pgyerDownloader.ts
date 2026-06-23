@@ -168,7 +168,42 @@ export async function extractBinaryFromIPA(ipaPath: string, extractDir: string):
     throw new Error(`Executable '${executableName}' not found in ${appDirs[0]}`);
   }
 
+  // ENABLE_DEBUG_DYLIB=YES（Xcode 默认 Debug 配置开启）时，CFBundleExecutable 指向的只是个
+  // 几十 KB 的瘦启动器，真正的代码和覆盖率映射数据在同目录下的 <executableName>.debug.dylib
+  // 里——存在的话优先用这个，否则覆盖率数据全部对不上（壳工程自己的文件也会从报告里消失）
+  const debugDylibPath = `${binaryPath}.debug.dylib`;
+  if (fs.existsSync(debugDylibPath)) {
+    return debugDylibPath;
+  }
+
   return binaryPath;
+}
+
+/**
+ * 找出 .app 包里 Frameworks/ 目录下所有嵌入的动态 framework 的可执行二进制。
+ *
+ * 组件以独立动态 framework 形式集成时（不是静态库），它的覆盖率映射数据在它自己的
+ * 二进制里，不在主 App 二进制里——llvm-cov 需要同时拿到这些二进制才能解析出组件自己的
+ * 源码覆盖率，否则组件文件永远不会出现在覆盖率报告里。
+ *
+ * @param appDir .app 包目录（extractBinaryFromIPA 解压出来的那个）
+ */
+export function extractFrameworkBinaries(appDir: string): string[] {
+  const frameworksDir = path.join(appDir, 'Frameworks');
+  if (!fs.existsSync(frameworksDir)) {
+    return [];
+  }
+
+  const binaries: string[] = [];
+  const frameworkDirs = fs.readdirSync(frameworksDir).filter(d => d.endsWith('.framework'));
+  for (const frameworkDir of frameworkDirs) {
+    const frameworkName = frameworkDir.replace(/\.framework$/, '');
+    const binaryPath = path.join(frameworksDir, frameworkDir, frameworkName);
+    if (fs.existsSync(binaryPath)) {
+      binaries.push(binaryPath);
+    }
+  }
+  return binaries;
 }
 
 // === 内部辅助函数 ===

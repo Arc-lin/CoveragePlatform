@@ -42,6 +42,9 @@ export interface IBuild extends Document {
   // 每个组件各自的 commitHash（不是 buildKey 复合指纹），用于直接去对应仓库拉源码
   componentRepos?: { name: string; repositoryUrl: string; commitHash: string }[];
   binaryPath: string;
+  // iOS 专用：以独立动态 framework 形式集成的组件二进制路径（上传 .ipa 时自动从
+  // Frameworks/ 目录提取），llvm-cov export 需要同时拿到这些二进制才能解析出组件源码覆盖率
+  frameworkBinaryPaths?: string[];
   status: 'ready' | 'processing' | 'error';
   mergedReportId?: mongoose.Types.ObjectId;
   rawUploadCount: number;
@@ -143,6 +146,7 @@ const BuildSchema = new Schema<IBuild>({
     _id: false
   }],
   binaryPath: { type: String, required: true },
+  frameworkBinaryPaths: [{ type: String }],
   status: { type: String, required: true, enum: ['ready', 'processing', 'error'], default: 'ready' },
   mergedReportId: { type: Schema.Types.ObjectId, ref: 'CoverageReport' },
   rawUploadCount: { type: Number, default: 0 },

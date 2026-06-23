@@ -91,7 +91,7 @@ function getJacocoCliPath(): string {
  */
 export async function mergeIOSCoverage(
   buildDir: string,
-  machoBinaryPath: string,
+  machoBinaryPaths: string | string[],
   profrawPaths: string[]
 ): Promise<string> {
   const mergedDir = path.join(buildDir, 'merged');
@@ -106,7 +106,13 @@ export async function mergeIOSCoverage(
   execSync(mergeCmd, { timeout: 120000, stdio: 'pipe' });
 
   // Step 2: 导出 profdata → LCOV
-  const exportCmd = `${findLLVMTool('llvm-cov')} export "${machoBinaryPath}" -instr-profile="${profdataPath}" -format=lcov`;
+  // 组件以独立动态 framework 形式集成时，覆盖率映射数据在它自己的二进制里，不在主 App 二进制里——
+  // llvm-cov export 支持传多个二进制（第一个位置参数 + 多个 -object），把所有相关二进制都传进去
+  // 才能拿到组件自己的源码覆盖率，不然组件文件永远不会出现在导出结果里
+  const binaries = Array.isArray(machoBinaryPaths) ? machoBinaryPaths : [machoBinaryPaths];
+  const [primaryBinary, ...additionalBinaries] = binaries;
+  const objectArgs = additionalBinaries.map(p => `-object "${p}"`).join(' ');
+  const exportCmd = `${findLLVMTool('llvm-cov')} export "${primaryBinary}" ${objectArgs} -instr-profile="${profdataPath}" -format=lcov`;
   const lcovOutput = execSync(exportCmd, { timeout: 120000, maxBuffer: 50 * 1024 * 1024 });
   fs.writeFileSync(lcovPath, lcovOutput);
 

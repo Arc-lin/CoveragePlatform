@@ -6,7 +6,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { mongoDb } from '../models/database';
 import { mergeIOSCoverage, mergeAndroidCoverage, withBuildLock, checkToolAvailability } from '../utils/coverageConverter';
 import { parseIOSCoverage, parseAndroidCoverage, getIncrementalFiles } from '../utils/coverageParser';
-import { extractPgyerKey, getIPADownloadUrl, downloadIPA, extractBinaryFromIPA } from '../utils/pgyerDownloader';
+import { extractPgyerKey, getIPADownloadUrl, downloadIPA, extractBinaryFromIPA, extractFrameworkBinaries } from '../utils/pgyerDownloader';
 import { moveFile } from '../utils/fsUtils';
 import { Build } from '../types';
 
@@ -340,7 +340,7 @@ router.post('/', binaryUpload.single('binary'), async (req: Request, res: Respon
     fs.mkdirSync(mergedDir, { recursive: true });
 
     // 移动 binary 到永久位置
-    const permanentBinaryPath = path.join(binaryDir, req.file.originalname);
+    let permanentBinaryPath = path.join(binaryDir, req.file.originalname);
     moveFile(req.file.path, permanentBinaryPath);
 
     // Android: 自动解压 classfiles.zip
@@ -361,6 +361,49 @@ router.post('/', binaryUpload.single('binary'), async (req: Request, res: Respon
       }
     }
 
+    // iOS: 传 .ipa 时自动解压，主二进制 + Frameworks/ 下所有嵌入的动态 framework 二进制都拿出来。
+    // 以独立动态 framework 形式集成的组件（不是静态库），覆盖率映射数据在它自己的二进制里，
+    // 不在主 App 二进制里——llvm-cov 需要同时拿到这些二进制才能解析出组件自己的源码覆盖率
+    let frameworkBinaryPaths: string[] | undefined;
+    if (project.platform === 'ios' && req.file.originalname.endsWith('.ipa')) {
+      const ipaExtractDir = path.join(buildDir, 'ipa-extract');
+      try {
+        const mainBinaryPath = await extractBinaryFromIPA(permanentBinaryPath, ipaExtractDir);
+        const appDir = path.dirname(mainBinaryPath);
+        const extractedFrameworkBinaries = extractFrameworkBinaries(appDir);
+
+        // 主二进制复制到 binary/ 目录，替代原来的 .ipa 作为 binaryPath
+        const mainBinaryName = path.basename(mainBinaryPath);
+        const permanentMainBinaryPath = path.join(binaryDir, mainBinaryName);
+        fs.copyFileSync(mainBinaryPath, permanentMainBinaryPath);
+        fs.unlinkSync(permanentBinaryPath); // 删掉原始 .ipa，不需要再保留
+        permanentBinaryPath = permanentMainBinaryPath;
+
+        // framework 二进制各自复制到 binary/Frameworks/ 下保留
+        if (extractedFrameworkBinaries.length > 0) {
+          const frameworksOutDir = path.join(binaryDir, 'Frameworks');
+          fs.mkdirSync(frameworksOutDir, { recursive: true });
+          frameworkBinaryPaths = extractedFrameworkBinaries.map((fbPath) => {
+            const frameworkName = path.basename(path.dirname(fbPath)); // e.g. FlipBook.framework
+            const outDir = path.join(frameworksOutDir, frameworkName);
+            fs.mkdirSync(outDir, { recursive: true });
+            const outPath = path.join(outDir, path.basename(fbPath));
+            fs.copyFileSync(fbPath, outPath);
+            return outPath;
+          });
+        }
+      } catch (e) {
+        fs.rmSync(buildDir, { recursive: true, force: true });
+        return res.status(400).json({
+          success: false,
+          message: 'Failed to extract binaries from .ipa',
+          error: (e as Error).message
+        });
+      } finally {
+        fs.rmSync(ipaExtractDir, { recursive: true, force: true });
+      }
+    }
+
     // 创建或更新 Build 记录
     let build: Build;
     if (existingBuild) {
@@ -371,6 +414,7 @@ router.post('/', binaryUpload.single('binary'), async (req: Request, res: Respon
         gitDiff,
         componentRepos,
         binaryPath: permanentBinaryPath,
+        frameworkBinaryPaths,
         status: 'ready',
         rawUploadCount: 0,
         mergedReportId: undefined,
@@ -392,6 +436,7 @@ router.post('/', binaryUpload.single('binary'), async (req: Request, res: Respon
         gitDiff,
         componentRepos,
         binaryPath: permanentBinaryPath,
+        frameworkBinaryPaths,
         status: 'ready'
       });
     }
@@ -400,10 +445,21 @@ router.post('/', binaryUpload.single('binary'), async (req: Request, res: Respon
     const realBuildDir = path.join(__dirname, '../../builds', projectId, build.id);
     if (buildDir !== realBuildDir) {
       fs.renameSync(buildDir, realBuildDir);
-      // 更新 binaryPath
-      const realBinaryPath = path.join(realBuildDir, 'binary', req.file.originalname);
-      await mongoDb.updateBuild(build.id, { binaryPath: realBinaryPath });
+      // 更新 binaryPath（用实际文件名，不是原始上传文件名——.ipa 上传时实际二进制文件名
+      // 是解压出来的可执行文件名，跟原始 .ipa 文件名不一样）
+      const realBinaryPath = path.join(realBuildDir, 'binary', path.basename(permanentBinaryPath));
+      const updates: Partial<Build> = { binaryPath: realBinaryPath };
       build.binaryPath = realBinaryPath;
+
+      if (frameworkBinaryPaths && frameworkBinaryPaths.length > 0) {
+        const realFrameworkBinaryPaths = frameworkBinaryPaths.map((fbPath) =>
+          fbPath.replace(buildDir, realBuildDir)
+        );
+        updates.frameworkBinaryPaths = realFrameworkBinaryPaths;
+        build.frameworkBinaryPaths = realFrameworkBinaryPaths;
+      }
+
+      await mongoDb.updateBuild(build.id, updates);
     }
 
     res.status(201).json({ success: true, data: build });
@@ -500,7 +556,7 @@ router.post('/:buildId/raw-coverage', rawUpload.single('file'), async (req: Requ
         // 执行转换
         let reportPath: string;
         if (build.platform === 'ios') {
-          reportPath = await mergeIOSCoverage(buildDir, build.binaryPath, rawFilePaths);
+          reportPath = await mergeIOSCoverage(buildDir, [build.binaryPath, ...(build.frameworkBinaryPaths || [])], rawFilePaths);
         } else {
           reportPath = await mergeAndroidCoverage(buildDir, build.binaryPath, rawFilePaths);
         }
@@ -801,7 +857,7 @@ router.post('/:buildId/remerge', async (req: Request, res: Response) => {
         const buildDir = path.dirname(path.dirname(build.binaryPath));
         let reportPath: string;
         if (build.platform === 'ios') {
-          reportPath = await mergeIOSCoverage(buildDir, build.binaryPath, rawFilePaths);
+          reportPath = await mergeIOSCoverage(buildDir, [build.binaryPath, ...(build.frameworkBinaryPaths || [])], rawFilePaths);
         } else {
           reportPath = await mergeAndroidCoverage(buildDir, build.binaryPath, rawFilePaths);
         }

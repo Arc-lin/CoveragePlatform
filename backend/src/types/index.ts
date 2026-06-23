@@ -42,6 +42,10 @@ export interface Build {
   // 组件化项目：壳工程仓库拉不到的文件，依次尝试各组件自己的仓库 + commit
   componentRepos?: { name: string; repositoryUrl: string; commitHash: string }[];
   binaryPath: string;
+  // iOS 专用：以独立动态 framework 形式集成的组件，覆盖率映射数据在它们自己的二进制里，
+  // 不在主 App 二进制里——上传 .ipa 时自动从 Frameworks/ 目录提取，llvm-cov export 需要
+  // 同时拿到这些二进制才能解析出组件自己的源码覆盖率
+  frameworkBinaryPaths?: string[];
   status: 'ready' | 'processing' | 'error';
   mergedReportId?: string;
   rawUploadCount: number;
