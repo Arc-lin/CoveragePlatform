@@ -16,6 +16,8 @@ const ReportDetail: React.FC = () => {
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [fileCoverage, setFileCoverage] = useState<LineCoverageDetail[]>([]);
   const [sourceCode, setSourceCode] = useState<string[] | null>(null);
+  const [sourceRepo, setSourceRepo] = useState<string | null>(null);
+  const [sourceError, setSourceError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [diffContent, setDiffContent] = useState('');
@@ -106,13 +108,15 @@ const ReportDetail: React.FC = () => {
       setSelectedFile(filePath);
       setFileCoverage([]); // 清空旧数据，触发 loading 状态
       setSourceCode(null);
+      setSourceRepo(null);
+      setSourceError(null);
 
       // 并行获取覆盖率数据和源码
       const coveragePromise = showIncremental && report?.gitDiff
         ? coverageApi.getIncrementalFileDetail(id!, filePath)
         : coverageApi.getFileDetail(id!, filePath);
 
-      const sourcePromise = coverageApi.getSourceCode(id!, filePath).catch(() => null);
+      const sourcePromise = coverageApi.getSourceCode(id!, filePath).catch((err) => err);
 
       const [coverageRes, sourceRes] = await Promise.all([coveragePromise, sourcePromise]);
 
@@ -120,6 +124,10 @@ const ReportDetail: React.FC = () => {
 
       if (sourceRes?.data?.data?.content) {
         setSourceCode(sourceRes.data.data.content.split('\n'));
+        setSourceRepo(sourceRes.data.data.sourceRepo || null);
+      } else {
+        // 组件化项目：壳工程和所有已注册的组件仓库都没找到这个文件
+        setSourceError(sourceRes?.response?.data?.message || '源码未找到');
       }
     } catch (err) {
       setError('Failed to load file coverage');
@@ -465,9 +473,14 @@ const ReportDetail: React.FC = () => {
         <Col md={8}>
           <Card className="border-0 shadow-sm">
             <Card.Header className="bg-light d-flex justify-content-between align-items-center">
-              <h6 className="mb-0">
-                {selectedFile ? `${selectedFile.split('/').pop()}` : 'Select a file to view coverage'}
-              </h6>
+              <div>
+                <h6 className="mb-0">
+                  {selectedFile ? `${selectedFile.split('/').pop()}` : 'Select a file to view coverage'}
+                </h6>
+                {sourceRepo && (
+                  <small className="text-muted">来源：{sourceRepo}</small>
+                )}
+              </div>
               {!selectedFile && (
                 <small className="text-muted">Click a file to view source code with coverage</small>
               )}
@@ -488,6 +501,11 @@ const ReportDetail: React.FC = () => {
                 </div>
               )}
             </Card.Header>
+            {sourceError && (
+              <Alert variant="warning" className="m-2 mb-0 py-2 small">
+                源码未找到：{sourceError}
+              </Alert>
+            )}
             <Card.Body className="p-0">
               {selectedFile ? (
                 fileCoverage.length > 0 ? (

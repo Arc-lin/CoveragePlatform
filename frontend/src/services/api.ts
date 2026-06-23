@@ -48,7 +48,7 @@ export const coverageApi = {
   getIncrementalFilesAuto: (reportId: string) =>
     api.get<ApiResponse<FileInfo[]> & { summary?: IncrementalSummary }>(`/coverage/${reportId}/incremental`),
   getSourceCode: (reportId: string, filePath: string) =>
-    api.get<ApiResponse<{ filePath: string; content: string; commitHash: string }>>(`/coverage/${reportId}/source?path=${encodeURIComponent(filePath)}`),
+    api.get<ApiResponse<{ filePath: string; content: string; commitHash: string; sourceRepo?: string }>>(`/coverage/${reportId}/source?path=${encodeURIComponent(filePath)}`),
   delete: (id: string) => api.delete<ApiResponse<void>>(`/coverage/${id}`),
 };
 

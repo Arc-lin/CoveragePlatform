@@ -337,6 +337,7 @@ export class MongoDatabase {
       branch: doc.branch,
       buildVersion: doc.buildVersion,
       gitDiff: doc.gitDiff,
+      componentRepos: doc.componentRepos,
       binaryPath: doc.binaryPath,
       status: doc.status,
       mergedReportId: doc.mergedReportId?.toString(),

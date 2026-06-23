@@ -465,6 +465,134 @@ router.get('/:id/file/incremental', async (req: Request, res: Response) => {
 });
 
 // 获取源码文件内容（从 GitHub raw API）
+// 依次跟随重定向请求一个 raw 文件 URL
+function fetchRawFile(url: string, headers: Record<string, string>, providerLabel: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const makeRequest = (reqUrl: string, redirectCount: number = 0) => {
+      if (redirectCount > 5) {
+        reject(new Error('Too many redirects'));
+        return;
+      }
+      try {
+        new URL(reqUrl); // 校验 URL 合法性
+      } catch {
+        reject(new Error(`Invalid URL: ${reqUrl}`));
+        return;
+      }
+      const client = reqUrl.startsWith('https') ? https : http;
+      client.get(reqUrl, { headers }, (response) => {
+        if (response.statusCode && response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+          makeRequest(response.headers.location, redirectCount + 1);
+          return;
+        }
+        if (response.statusCode !== 200) {
+          reject(new Error(`${providerLabel} returned ${response.statusCode}`));
+          return;
+        }
+        let data = '';
+        response.on('data', chunk => data += chunk);
+        response.on('end', () => resolve(data));
+        response.on('error', reject);
+      }).on('error', reject);
+    };
+    makeRequest(url);
+  });
+}
+
+// 给定一个仓库（壳工程或某个组件）+ commit，依次尝试各平台常见的源码路径前缀去拉文件，
+// 命中返回内容，全部失败返回 null（不抛错——调用方还要接着试下一个仓库）
+async function fetchSourceFromRepo(
+  repositoryUrl: string,
+  commitHash: string,
+  filePath: string,
+  platform: string,
+  accessToken: string | undefined,
+  reportPathForPythonSniff: string | undefined
+): Promise<{ content: string; pathCandidates: string[] } | null> {
+  const parsedRepo = parseRepositoryUrl(repositoryUrl);
+  if (!parsedRepo) return null;
+  const { repo } = parsedRepo;
+
+  // LCOV 中 iOS 文件路径可能是绝对路径，需转为相对路径
+  // 例如 /Users/xxx/Desktop/CodeCoverageDemo/CodeCoverageDemo/ViewController.m
+  // 需要基于 repo 名提取相对路径: CodeCoverageDemo/ViewController.m
+  let normalizedPath = filePath;
+  if (path.isAbsolute(filePath)) {
+    const parts = filePath.split('/');
+    const repoIdx = parts.findIndex(p => p === repo);
+    if (repoIdx >= 0 && repoIdx < parts.length - 1) {
+      normalizedPath = parts.slice(repoIdx + 1).join('/');
+    } else {
+      normalizedPath = parts.slice(-2).join('/');
+    }
+  }
+
+  // 尝试多个路径前缀（JaCoCo 使用包路径，需要映射到项目源码路径）
+  const pathCandidates = [normalizedPath];
+  if (platform === 'android') {
+    const prefixes = [
+      'app/src/main/java/',
+      'app/src/main/kotlin/',
+      'src/main/java/',
+      'src/main/kotlin/',
+    ];
+    for (const prefix of prefixes) {
+      if (!normalizedPath.startsWith(prefix)) {
+        pathCandidates.push(prefix + normalizedPath);
+      }
+    }
+  } else if (platform === 'ios') {
+    const prefixes = ['Sources/', 'src/'];
+    for (const prefix of prefixes) {
+      if (!normalizedPath.startsWith(prefix)) {
+        pathCandidates.push(prefix + normalizedPath);
+      }
+    }
+  } else if (platform === 'python') {
+    const prefixes = ['src/', 'lib/', 'app/'];
+    for (const prefix of prefixes) {
+      if (!normalizedPath.startsWith(prefix)) {
+        pathCandidates.push(prefix + normalizedPath);
+      }
+    }
+    // 也尝试从 Cobertura XML 的 <source> 元素推断相对路径
+    // 例如 <source>/tmp/project/src</source> + filename="calculator.py" => src/calculator.py
+    if (reportPathForPythonSniff) {
+      try {
+        const fs = await import('fs');
+        const head = fs.readFileSync(reportPathForPythonSniff, 'utf-8').substring(0, 2000);
+        const sourceMatch = head.match(/<source>([^<]+)<\/source>/);
+        if (sourceMatch) {
+          const sourcePath = sourceMatch[1];
+          const repoIdx = sourcePath.indexOf(repo);
+          if (repoIdx >= 0) {
+            const relativeRoot = sourcePath.substring(repoIdx + repo.length + 1);
+            if (relativeRoot) {
+              const candidateFromSource = relativeRoot + '/' + normalizedPath;
+              if (!pathCandidates.includes(candidateFromSource)) {
+                pathCandidates.unshift(candidateFromSource);
+              }
+            }
+          }
+        }
+      } catch {
+        // ignore parse errors
+      }
+    }
+  }
+
+  for (const candidate of pathCandidates) {
+    const { url: rawUrl, headers } = buildRawFileRequest(parsedRepo, commitHash, candidate, accessToken);
+    try {
+      const content = await fetchRawFile(rawUrl, headers, parsedRepo.provider);
+      return { content, pathCandidates };
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
 router.get('/:id/source', async (req: Request, res: Response) => {
   try {
     const id = req.params.id;
@@ -494,153 +622,48 @@ router.get('/:id/source', async (req: Request, res: Response) => {
       });
     }
 
-    // 解析仓库信息，支持 GitHub / GitLab（含自建实例）/ Gitee / Bitbucket
-    const parsedRepo = parseRepositoryUrl(project.repositoryUrl);
-    if (!parsedRepo) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid repositoryUrl format. Expected: https://{host}/{owner}/{repo}'
-      });
-    }
-
-    const { repo } = parsedRepo;
     const commitHash = report.commitHash;
 
-    // LCOV 中 iOS 文件路径可能是绝对路径，需转为相对路径
-    // 例如 /Users/xxx/Desktop/CodeCoverageDemo/CodeCoverageDemo/ViewController.m
-    // 需要基于 repo 名提取相对路径: CodeCoverageDemo/ViewController.m
-    let normalizedPath = filePath;
-    if (path.isAbsolute(filePath)) {
-      const parts = filePath.split('/');
-      // 查找 repo 名在路径中的位置，取其后面的部分作为相对路径
-      const repoIdx = parts.findIndex(p => p === repo);
-      if (repoIdx >= 0 && repoIdx < parts.length - 1) {
-        normalizedPath = parts.slice(repoIdx + 1).join('/');
-      } else {
-        // 兜底：取最后两段作为相对路径
-        normalizedPath = parts.slice(-2).join('/');
-      }
+    // 先试壳工程仓库
+    const shellResult = await fetchSourceFromRepo(
+      project.repositoryUrl, commitHash, filePath, project.platform, project.accessToken, report.reportPath
+    );
+    if (shellResult) {
+      return res.json({
+        success: true,
+        data: { filePath, content: shellResult.content, commitHash }
+      });
     }
 
-    // 尝试多个路径前缀（JaCoCo 使用包路径，需要映射到项目源码路径）
-    const pathCandidates = [normalizedPath];
-    if (project.platform === 'android') {
-      // Android 项目常见源码路径前缀
-      const prefixes = [
-        'app/src/main/java/',
-        'app/src/main/kotlin/',
-        'src/main/java/',
-        'src/main/kotlin/',
-      ];
-      for (const prefix of prefixes) {
-        if (!normalizedPath.startsWith(prefix)) {
-          pathCandidates.push(prefix + normalizedPath);
-        }
-      }
-    } else if (project.platform === 'ios') {
-      // iOS 项目可能的路径前缀
-      const prefixes = ['Sources/', 'src/'];
-      for (const prefix of prefixes) {
-        if (!normalizedPath.startsWith(prefix)) {
-          pathCandidates.push(prefix + normalizedPath);
-        }
-      }
-    } else if (project.platform === 'python') {
-      // Python 项目常见源码路径前缀
-      const prefixes = ['src/', 'lib/', 'app/'];
-      for (const prefix of prefixes) {
-        if (!normalizedPath.startsWith(prefix)) {
-          pathCandidates.push(prefix + normalizedPath);
-        }
-      }
-      // 也尝试从 Cobertura XML 的 <source> 元素推断相对路径
-      // 例如 <source>/tmp/project/src</source> + filename="calculator.py" => src/calculator.py
-      if (report.reportPath) {
-        try {
-          const fs = await import('fs');
-          const head = fs.readFileSync(report.reportPath, 'utf-8').substring(0, 2000);
-          const sourceMatch = head.match(/<source>([^<]+)<\/source>/);
-          if (sourceMatch) {
-            const sourcePath = sourceMatch[1];
-            // 从 source 路径中提取 repo 相对部分
-            // 例如 /tmp/python-coverage-demo/src -> 找到 repo 名后取剩余部分 -> src
-            const repoIdx = sourcePath.indexOf(repo);
-            if (repoIdx >= 0) {
-              const relativeRoot = sourcePath.substring(repoIdx + repo.length + 1); // e.g. "src"
-              if (relativeRoot) {
-                const candidateFromSource = relativeRoot + '/' + normalizedPath;
-                if (!pathCandidates.includes(candidateFromSource)) {
-                  // 优先尝试这个路径
-                  pathCandidates.unshift(candidateFromSource);
-                }
+    // 壳工程仓库没找到，按 Build 上记录的 componentRepos 依次试组件仓库
+    // （组件仓库目前复用壳工程项目的 accessToken，假设是同一个账号/组织下的私有仓库）
+    let triedRepos = [project.repositoryUrl];
+    if (report.buildId) {
+      const build = await mongoDb.getBuildById(report.buildId);
+      if (build?.componentRepos) {
+        for (const component of build.componentRepos) {
+          const componentResult = await fetchSourceFromRepo(
+            component.repositoryUrl, component.commitHash, filePath, project.platform, project.accessToken, undefined
+          );
+          triedRepos.push(component.repositoryUrl);
+          if (componentResult) {
+            return res.json({
+              success: true,
+              data: {
+                filePath,
+                content: componentResult.content,
+                commitHash: component.commitHash,
+                sourceRepo: component.name
               }
-            }
+            });
           }
-        } catch {
-          // ignore parse errors
         }
       }
     }
 
-    // 依次尝试获取源码
-    const fetchRawFile = (url: string, headers: Record<string, string>): Promise<string> => {
-      return new Promise((resolve, reject) => {
-        const makeRequest = (reqUrl: string, redirectCount: number = 0) => {
-          if (redirectCount > 5) {
-            reject(new Error('Too many redirects'));
-            return;
-          }
-          try {
-            new URL(reqUrl); // 校验 URL 合法性
-          } catch {
-            reject(new Error(`Invalid URL: ${reqUrl}`));
-            return;
-          }
-          const client = reqUrl.startsWith('https') ? https : http;
-          client.get(reqUrl, { headers }, (response) => {
-            if (response.statusCode && response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
-              makeRequest(response.headers.location, redirectCount + 1);
-              return;
-            }
-            if (response.statusCode !== 200) {
-              reject(new Error(`${parsedRepo.provider} returned ${response.statusCode}`));
-              return;
-            }
-            let data = '';
-            response.on('data', chunk => data += chunk);
-            response.on('end', () => resolve(data));
-            response.on('error', reject);
-          }).on('error', reject);
-        };
-        makeRequest(url);
-      });
-    };
-
-    let sourceCode: string | null = null;
-    for (const candidate of pathCandidates) {
-      const { url: rawUrl, headers } = buildRawFileRequest(parsedRepo, commitHash, candidate, project.accessToken);
-      try {
-        sourceCode = await fetchRawFile(rawUrl, headers);
-        break;
-      } catch {
-        continue;
-      }
-    }
-
-    if (!sourceCode) {
-      return res.status(404).json({
-        success: false,
-        message: `Source file not found. Tried paths: ${pathCandidates.join(', ')}`
-      });
-    }
-
-    res.json({
-      success: true,
-      data: {
-        filePath,
-        content: sourceCode,
-        commitHash
-      }
+    return res.status(404).json({
+      success: false,
+      message: `Source file not found in any registered repository (tried ${triedRepos.length}: ${triedRepos.join(', ')})`
     });
   } catch (error) {
     res.status(500).json({

@@ -38,6 +38,9 @@ export interface IBuild extends Document {
   branch: string;
   buildVersion?: string;
   gitDiff?: string;
+  // 组件化项目：壳工程仓库里拉不到的文件，按这份清单依次尝试各组件自己的仓库 + commit。
+  // 每个组件各自的 commitHash（不是 buildKey 复合指纹），用于直接去对应仓库拉源码
+  componentRepos?: { name: string; repositoryUrl: string; commitHash: string }[];
   binaryPath: string;
   status: 'ready' | 'processing' | 'error';
   mergedReportId?: mongoose.Types.ObjectId;
@@ -133,6 +136,12 @@ const BuildSchema = new Schema<IBuild>({
   branch: { type: String, required: true },
   buildVersion: { type: String },
   gitDiff: { type: String },
+  componentRepos: [{
+    name: { type: String, required: true },
+    repositoryUrl: { type: String, required: true },
+    commitHash: { type: String, required: true },
+    _id: false
+  }],
   binaryPath: { type: String, required: true },
   status: { type: String, required: true, enum: ['ready', 'processing', 'error'], default: 'ready' },
   mergedReportId: { type: Schema.Types.ObjectId, ref: 'CoverageReport' },

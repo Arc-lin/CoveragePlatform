@@ -259,6 +259,24 @@ router.post('/', binaryUpload.single('binary'), async (req: Request, res: Respon
     // 不传就默认等于 commitHash——非组件化项目完全不受影响，行为跟之前一样
     const buildKey: string = req.body.buildKey || commitHash;
 
+    // 组件化项目：壳工程仓库拉不到的文件，按这份清单依次尝试各组件自己的仓库 + commit。
+    // JSON 字符串形式传（multipart 表单字段都是字符串），格式见 compute_build_key.sh 同目录下
+    // extract_component_repos.sh 的输出
+    let componentRepos: { name: string; repositoryUrl: string; commitHash: string }[] | undefined;
+    if (req.body.componentRepos) {
+      try {
+        const parsed = JSON.parse(req.body.componentRepos);
+        if (Array.isArray(parsed)) {
+          componentRepos = parsed.filter(
+            (c) => c && typeof c.name === 'string' && typeof c.repositoryUrl === 'string' && typeof c.commitHash === 'string'
+          );
+        }
+      } catch {
+        fs.unlinkSync(req.file.path);
+        return res.status(400).json({ success: false, message: 'Invalid componentRepos JSON' });
+      }
+    }
+
     if (!projectId || !commitHash || !branch) {
       fs.unlinkSync(req.file.path);
       return res.status(400).json({
@@ -351,6 +369,7 @@ router.post('/', binaryUpload.single('binary'), async (req: Request, res: Respon
         branch,
         buildVersion,
         gitDiff,
+        componentRepos,
         binaryPath: permanentBinaryPath,
         status: 'ready',
         rawUploadCount: 0,
@@ -371,6 +390,7 @@ router.post('/', binaryUpload.single('binary'), async (req: Request, res: Respon
         branch,
         buildVersion,
         gitDiff,
+        componentRepos,
         binaryPath: permanentBinaryPath,
         status: 'ready'
       });

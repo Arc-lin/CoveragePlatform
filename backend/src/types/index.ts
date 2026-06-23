@@ -39,6 +39,8 @@ export interface Build {
   branch: string;
   buildVersion?: string;
   gitDiff?: string;
+  // 组件化项目：壳工程仓库拉不到的文件，依次尝试各组件自己的仓库 + commit
+  componentRepos?: { name: string; repositoryUrl: string; commitHash: string }[];
   binaryPath: string;
   status: 'ready' | 'processing' | 'error';
   mergedReportId?: string;
