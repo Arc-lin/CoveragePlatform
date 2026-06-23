@@ -33,6 +33,9 @@ export interface Build {
   projectId: string;
   platform: 'ios' | 'android' | 'python';
   commitHash: string;
+  // 组件化项目的"构建身份"键，默认等于 commitHash。upsert/resolve 都按这个字段匹配，
+  // commitHash 字段始终是真实的壳工程 commit，只用于源码拉取/展示
+  buildKey: string;
   branch: string;
   buildVersion?: string;
   gitDiff?: string;

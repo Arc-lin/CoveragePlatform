@@ -31,6 +31,10 @@ export interface IBuild extends Document {
   projectId: mongoose.Types.ObjectId;
   platform: 'ios' | 'android' | 'python';
   commitHash: string;
+  // 组件化项目用的"构建身份"：壳工程 commit + 所有组件 commit 拼起来算出的复合指纹。
+  // 非组件化项目不需要单独传，默认等于 commitHash——upsert/resolve 都按这个字段匹配，
+  // commitHash 字段始终保留真实的壳工程 commit，专门给源码拉取/展示用，语义不变。
+  buildKey: string;
   branch: string;
   buildVersion?: string;
   gitDiff?: string;
@@ -125,6 +129,7 @@ const BuildSchema = new Schema<IBuild>({
   projectId: { type: Schema.Types.ObjectId, required: true, ref: 'Project' },
   platform: { type: String, required: true, enum: ['ios', 'android', 'python'] },
   commitHash: { type: String, required: true },
+  buildKey: { type: String, required: true },
   branch: { type: String, required: true },
   buildVersion: { type: String },
   gitDiff: { type: String },
@@ -139,9 +144,10 @@ const BuildSchema = new Schema<IBuild>({
 });
 
 BuildSchema.index({ projectId: 1, createdAt: -1 });
-// 同一个 commit 可能被 CI 重复构建多次（同一份代码、不同的打包批次），
-// 按 (projectId, commitHash) 查找已有 Build 用于复用/覆盖，而不是每次都新建一条
-BuildSchema.index({ projectId: 1, commitHash: 1 });
+// 同一个 commit/构建身份可能被 CI 重复构建多次（同一份代码，不同打包批次，或组件化项目
+// 用复合指纹当身份），按 (projectId, buildKey) 查找已有 Build 用于复用/覆盖，而不是每次新建一条。
+// 非组件化项目 buildKey 默认等于 commitHash，效果跟原来按 commitHash 查找完全一样
+BuildSchema.index({ projectId: 1, buildKey: 1 });
 
 // 原始覆盖率上传模型
 const RawUploadSchema = new Schema<IRawUpload>({

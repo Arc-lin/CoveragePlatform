@@ -249,9 +249,10 @@ export class MongoDatabase {
     return build ? this.toBuild(build) : undefined;
   }
 
-  // 同一个 commit 可能被 CI 重复构建多次，按 (projectId, commitHash) 复用已有 Build
-  async getBuildByProjectAndCommit(projectId: string, commitHash: string): Promise<Build | undefined> {
-    const build = await BuildModel.findOne({ projectId, commitHash }).sort({ createdAt: -1 });
+  // 同一个构建身份可能被 CI 重复构建多次，按 (projectId, buildKey) 复用已有 Build。
+  // 非组件化项目 buildKey 默认等于 commitHash，行为跟原来按 commitHash 查找完全一样
+  async getBuildByProjectAndKey(projectId: string, buildKey: string): Promise<Build | undefined> {
+    const build = await BuildModel.findOne({ projectId, buildKey }).sort({ createdAt: -1 });
     return build ? this.toBuild(build) : undefined;
   }
 
@@ -332,6 +333,7 @@ export class MongoDatabase {
       projectId: doc.projectId.toString(),
       platform: doc.platform,
       commitHash: doc.commitHash,
+      buildKey: doc.buildKey,
       branch: doc.branch,
       buildVersion: doc.buildVersion,
       gitDiff: doc.gitDiff,

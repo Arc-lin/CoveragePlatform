@@ -167,6 +167,7 @@ router.post('/from-pgyer', async (req: Request, res: Response) => {
           projectId,
           platform: 'ios',
           commitHash,
+          buildKey: commitHash,
           branch,
           buildVersion,
           gitDiff,
@@ -254,6 +255,9 @@ router.post('/', binaryUpload.single('binary'), async (req: Request, res: Respon
     }
 
     const { projectId, commitHash, branch, buildVersion, gitDiff } = req.body;
+    // buildKey 是组件化项目用的"构建身份"（壳工程 commit + 所有组件 commit 的复合指纹），
+    // 不传就默认等于 commitHash——非组件化项目完全不受影响，行为跟之前一样
+    const buildKey: string = req.body.buildKey || commitHash;
 
     if (!projectId || !commitHash || !branch) {
       fs.unlinkSync(req.file.path);
@@ -288,10 +292,10 @@ router.post('/', binaryUpload.single('binary'), async (req: Request, res: Respon
       });
     }
 
-    // 同一个 commit 可能被 CI 重复构建多次（比如重新打包、换签名），
-    // 按 (projectId, commitHash) 复用已有 Build，而不是每次都新建一条、产生新的 buildId——
-    // 这样 App 侧只要知道 commitHash（编译时打包进 bundle，不需要手动维护 buildId）就能找到正确的 Build。
-    const existingBuild = await mongoDb.getBuildByProjectAndCommit(projectId, commitHash);
+    // 同一个构建身份可能被 CI 重复构建多次（比如重新打包、换签名，或组件化项目组件升级），
+    // 按 (projectId, buildKey) 复用已有 Build，而不是每次都新建一条、产生新的 buildId——
+    // 这样 App 侧只要知道 buildKey（编译时打包进 bundle，不需要手动维护 buildId）就能找到正确的 Build。
+    const existingBuild = await mongoDb.getBuildByProjectAndKey(projectId, buildKey);
 
     const buildId = existingBuild
       ? existingBuild.id
@@ -343,6 +347,7 @@ router.post('/', binaryUpload.single('binary'), async (req: Request, res: Respon
     let build: Build;
     if (existingBuild) {
       const updated = await mongoDb.updateBuild(buildId, {
+        commitHash,
         branch,
         buildVersion,
         gitDiff,
@@ -362,6 +367,7 @@ router.post('/', binaryUpload.single('binary'), async (req: Request, res: Respon
         projectId,
         platform: project.platform,
         commitHash,
+        buildKey,
         branch,
         buildVersion,
         gitDiff,
@@ -679,15 +685,18 @@ router.get('/project/:projectId', async (req: Request, res: Response) => {
 // =====================================================
 router.get('/resolve', async (req: Request, res: Response) => {
   try {
-    const { projectId, commitHash } = req.query;
-    if (!projectId || !commitHash) {
+    // 查询参数名仍然叫 commitHash（兼容现有 SDK，不需要改 App 端代码），但匹配的是 Build 的
+    // buildKey 字段——非组件化项目 buildKey 默认等于 commitHash，效果完全一样；组件化项目这里传的
+    // 实际是 CI 算出来的复合指纹（SDK 从 bundle 里读到什么值就原样传什么值，不需要关心语义）
+    const { projectId, commitHash: buildKey } = req.query;
+    if (!projectId || !buildKey) {
       return res.status(400).json({
         success: false,
         message: 'Missing required query params: projectId, commitHash'
       });
     }
 
-    const build = await mongoDb.getBuildByProjectAndCommit(projectId as string, commitHash as string);
+    const build = await mongoDb.getBuildByProjectAndKey(projectId as string, buildKey as string);
     if (!build) {
       return res.status(404).json({
         success: false,
