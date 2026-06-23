@@ -149,15 +149,34 @@ router.post('/from-pgyer', async (req: Request, res: Response) => {
           });
         });
 
-        // 4. 从 IPA 中提取 Mach-O binary
+        // 4. 从 IPA 中提取 Mach-O binary + Frameworks/ 下所有嵌入的动态 framework 二进制
+        //    （组件以独立动态 framework 形式集成时，覆盖率映射数据在它自己的二进制里，
+        //    不在主 App 二进制里——跟主上传接口走的是同一套提取逻辑，见 extractFrameworkBinaries）
         pgyerTasks.set(taskId, { status: 'extracting', filename });
         const ipaExtractDir = path.join(buildDir, 'ipa_extracted');
         const machoBinaryPath = await extractBinaryFromIPA(ipaPath, ipaExtractDir);
+        const appDir = path.dirname(machoBinaryPath);
+        const extractedFrameworkBinaries = extractFrameworkBinaries(appDir);
 
-        // 复制 binary 到 binary 目录
+        // 复制主 binary 到 binary 目录
         const binaryName = path.basename(machoBinaryPath);
         const permanentBinaryPath = path.join(binaryDir, binaryName);
         fs.copyFileSync(machoBinaryPath, permanentBinaryPath);
+
+        // framework 二进制各自复制到 binary/Frameworks/ 下保留
+        let frameworkBinaryPaths: string[] | undefined;
+        if (extractedFrameworkBinaries.length > 0) {
+          const frameworksOutDir = path.join(binaryDir, 'Frameworks');
+          fs.mkdirSync(frameworksOutDir, { recursive: true });
+          frameworkBinaryPaths = extractedFrameworkBinaries.map((fbPath) => {
+            const frameworkName = path.basename(path.dirname(fbPath));
+            const outDir = path.join(frameworksOutDir, frameworkName);
+            fs.mkdirSync(outDir, { recursive: true });
+            const outPath = path.join(outDir, path.basename(fbPath));
+            fs.copyFileSync(fbPath, outPath);
+            return outPath;
+          });
+        }
 
         // 清理解压目录
         fs.rmSync(ipaExtractDir, { recursive: true, force: true });
@@ -172,6 +191,7 @@ router.post('/from-pgyer', async (req: Request, res: Response) => {
           buildVersion,
           gitDiff,
           binaryPath: permanentBinaryPath,
+          frameworkBinaryPaths,
           status: 'ready'
         });
 
@@ -180,8 +200,16 @@ router.post('/from-pgyer', async (req: Request, res: Response) => {
         if (buildDir !== realBuildDir) {
           fs.renameSync(buildDir, realBuildDir);
           const realBinaryPath = path.join(realBuildDir, 'binary', binaryName);
-          await mongoDb.updateBuild(build.id, { binaryPath: realBinaryPath });
+          const updates: Partial<Build> = { binaryPath: realBinaryPath };
           build.binaryPath = realBinaryPath;
+          if (frameworkBinaryPaths) {
+            const realFrameworkBinaryPaths = frameworkBinaryPaths.map((fbPath) =>
+              fbPath.replace(buildDir, realBuildDir)
+            );
+            updates.frameworkBinaryPaths = realFrameworkBinaryPaths;
+            build.frameworkBinaryPaths = realFrameworkBinaryPaths;
+          }
+          await mongoDb.updateBuild(build.id, updates);
         }
 
         pgyerTasks.set(taskId, { status: 'complete', build, filename });
@@ -310,6 +338,19 @@ router.post('/', binaryUpload.single('binary'), async (req: Request, res: Respon
       });
     }
 
+    // iOS 统一只接受 .ipa，不再支持直传裸 Mach-O 二进制——组件大多以独立动态 framework
+    // 形式集成（CocoaPods 默认就是这种），覆盖率映射数据在组件自己的二进制里，只传主二进制
+    // 拿不到 Frameworks/ 目录，组件源码永远不会出现在覆盖率报告里（见接入文档 13 节 Q11）
+    if (project.platform === 'ios' && !req.file.originalname.endsWith('.ipa')) {
+      fs.unlinkSync(req.file.path);
+      return res.status(400).json({
+        success: false,
+        message: 'iOS Build creation requires a full .ipa, not a raw binary. ' +
+          'Package your .app into Payload/YourApp.app and zip it as .ipa before uploading ' +
+          '(see ios-coverage/接入文档.md section 10.1).'
+      });
+    }
+
     // 同一个构建身份可能被 CI 重复构建多次（比如重新打包、换签名，或组件化项目组件升级），
     // 按 (projectId, buildKey) 复用已有 Build，而不是每次都新建一条、产生新的 buildId——
     // 这样 App 侧只要知道 buildKey（编译时打包进 bundle，不需要手动维护 buildId）就能找到正确的 Build。
@@ -361,11 +402,11 @@ router.post('/', binaryUpload.single('binary'), async (req: Request, res: Respon
       }
     }
 
-    // iOS: 传 .ipa 时自动解压，主二进制 + Frameworks/ 下所有嵌入的动态 framework 二进制都拿出来。
+    // iOS：自动解压 .ipa，主二进制 + Frameworks/ 下所有嵌入的动态 framework 二进制都拿出来。
     // 以独立动态 framework 形式集成的组件（不是静态库），覆盖率映射数据在它自己的二进制里，
     // 不在主 App 二进制里——llvm-cov 需要同时拿到这些二进制才能解析出组件自己的源码覆盖率
     let frameworkBinaryPaths: string[] | undefined;
-    if (project.platform === 'ios' && req.file.originalname.endsWith('.ipa')) {
+    if (project.platform === 'ios') {
       const ipaExtractDir = path.join(buildDir, 'ipa-extract');
       try {
         const mainBinaryPath = await extractBinaryFromIPA(permanentBinaryPath, ipaExtractDir);
