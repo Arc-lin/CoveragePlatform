@@ -290,6 +290,80 @@ const ReportDetail: React.FC = () => {
                     )}
                   </div>
                 </>
+              ) : report.incrementalCoverage !== undefined ? (
+                <>
+                  {/* 多仓库组件化项目：增量覆盖率是按 moduleCoverages 算出来存在 report 上的，
+                      不是靠这里手动贴 diff 触发的 incrementalSummary 抓取（那个依赖 report.gitDiff，
+                      组件化项目用的是 Build.moduleDiffs，对不上，所以走这个分支单独处理） */}
+                  <h6 className="mb-3">
+                    Incremental Coverage
+                    <Badge bg="info" className="ms-2" style={{ fontSize: '0.7em' }}>Δ</Badge>
+                  </h6>
+                  <div className="mb-3">
+                    <div className="d-flex justify-content-between mb-1">
+                      <span>Incremental Coverage（按模块加权聚合）</span>
+                      {getCoverageBadge(report.incrementalCoverage)}
+                    </div>
+                    <ProgressBar
+                      now={report.incrementalCoverage}
+                      variant={getCoverageColor(report.incrementalCoverage)}
+                      style={{ height: '10px' }}
+                    />
+                  </div>
+                  {report.moduleCoverages && report.moduleCoverages.length > 0 && (
+                    <div className="mb-3">
+                      {report.moduleCoverages.map((m) => (
+                        <div key={m.module} className="d-flex justify-content-between align-items-center mb-1">
+                          <small className="text-muted">
+                            <Badge bg="secondary" className="me-1">{m.module}</Badge>
+                          </small>
+                          {m.incrementalCoverage !== undefined ? (
+                            <Badge bg={getCoverageColor(m.incrementalCoverage)}>Δ {m.incrementalCoverage.toFixed(0)}%</Badge>
+                          ) : (
+                            <small className="text-muted">无改动</small>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* 全量覆盖率折叠展示 */}
+                  <div className="border-top pt-2">
+                    <Button
+                      variant="link"
+                      size="sm"
+                      className="p-0 text-muted text-decoration-none"
+                      onClick={() => setShowFullCoverage(!showFullCoverage)}
+                    >
+                      {showFullCoverage ? '▼' : '▶'} Full Coverage Details
+                    </Button>
+                    {showFullCoverage && (
+                      <div className="mt-2">
+                        <div className="mb-2">
+                          <div className="d-flex justify-content-between mb-1">
+                            <small>Line Coverage</small>
+                            <small className={`text-${getCoverageColor(report.lineCoverage)}`}>{report.lineCoverage.toFixed(1)}%</small>
+                          </div>
+                          <ProgressBar now={report.lineCoverage} variant={getCoverageColor(report.lineCoverage)} style={{ height: '6px' }} />
+                        </div>
+                        <div className="mb-2">
+                          <div className="d-flex justify-content-between mb-1">
+                            <small>Function Coverage</small>
+                            <small className={`text-${getCoverageColor(report.functionCoverage)}`}>{report.functionCoverage.toFixed(1)}%</small>
+                          </div>
+                          <ProgressBar now={report.functionCoverage} variant={getCoverageColor(report.functionCoverage)} style={{ height: '6px' }} />
+                        </div>
+                        <div className="mb-2">
+                          <div className="d-flex justify-content-between mb-1">
+                            <small>Branch Coverage</small>
+                            <small className={`text-${getCoverageColor(report.branchCoverage)}`}>{report.branchCoverage.toFixed(1)}%</small>
+                          </div>
+                          <ProgressBar now={report.branchCoverage} variant={getCoverageColor(report.branchCoverage)} style={{ height: '6px' }} />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </>
               ) : (
                 <>
                   <h6 className="mb-3">Coverage Summary</h6>
@@ -388,8 +462,9 @@ const ReportDetail: React.FC = () => {
         </Card>
       )}
 
-      {/* Incremental Coverage Analysis - 只在无 gitDiff 时显示手动输入 */}
-      {!report?.gitDiff && (
+      {/* Incremental Coverage Analysis - 只在无 gitDiff 时显示手动输入；多仓库组件化项目
+          走 moduleDiffs，不是这里贴单份 diff 的场景，也不显示 */}
+      {!report?.gitDiff && !report?.moduleCoverages && (
         <Card className="border-0 shadow-sm mb-4">
           <Card.Header className="bg-info text-white">
             <h5 className="mb-0"><i className="bi bi-graph-up me-2"></i>Incremental Coverage Analysis</h5>
