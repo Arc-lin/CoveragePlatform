@@ -213,6 +213,7 @@ export class MongoDatabase {
       reportPath: doc.reportPath,
       buildId: doc.buildId?.toString(),
       source: doc.source || 'manual',
+      moduleCoverages: doc.moduleCoverages,
       createdAt: doc.createdAt instanceof Date ? doc.createdAt.toISOString() : doc.createdAt
     };
   }
@@ -228,6 +229,9 @@ export class MongoDatabase {
     };
     if (doc.lines && doc.lines.length > 0) {
       result.lines = doc.lines;
+    }
+    if (doc.module) {
+      result.module = doc.module;
     }
     return result;
   }
@@ -338,6 +342,8 @@ export class MongoDatabase {
       buildVersion: doc.buildVersion,
       gitDiff: doc.gitDiff,
       componentRepos: doc.componentRepos,
+      moduleDiffs: doc.moduleDiffs,
+      buildFingerprint: doc.buildFingerprint,
       binaryPath: doc.binaryPath,
       frameworkBinaryPaths: doc.frameworkBinaryPaths,
       status: doc.status,

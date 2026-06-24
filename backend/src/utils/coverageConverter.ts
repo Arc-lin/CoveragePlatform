@@ -119,21 +119,41 @@ export async function mergeIOSCoverage(
   return lcovPath;
 }
 
+// 多仓库组件化项目（Gradle 多模块 + Maven AAR）的 classfiles.zip manifest 格式：
+// { "entries": [{ "module": "feature-home", "classRoot": "components/feature-home",
+//                  "repositoryUrl": "...", "commitHash": "..." }, ...] }
+// classRoot 是相对 classfiles.zip 解压后根目录的相对路径。没有 manifest.json 时
+// 退化成老的单一扁平目录行为（壳工程单仓库项目，零改动）。
+export interface ClassfilesManifestEntry {
+  module: string;
+  classRoot: string;
+  repositoryUrl?: string;
+  commitHash?: string;
+}
+
+export interface AndroidMergeResult {
+  // 主报告路径：没有 manifest 时是唯一的报告；有 manifest 时是第一个模块的报告
+  // （调用方需要整体数字时应该用 modules 加权聚合，不要只看这个）
+  reportPath: string;
+  modules?: { module: string; xmlPath: string; repositoryUrl?: string; commitHash?: string }[];
+}
+
 /**
  * Android 覆盖率转换管线
- * 合并所有 .ec → merged.exec → JaCoCo XML
+ * 合并所有 .ec → merged.exec → JaCoCo XML（按 classfiles.zip 是否带 manifest.json
+ * 分单仓库/多模块两种模式，对同一份 merged.exec 出报告）
  */
 export async function mergeAndroidCoverage(
   buildDir: string,
   classfilesZipPath: string,
   ecPaths: string[]
-): Promise<string> {
+): Promise<AndroidMergeResult> {
   const mergedDir = path.join(buildDir, 'merged');
   fs.mkdirSync(mergedDir, { recursive: true });
 
   const jacocoCliPath = getJacocoCliPath();
   const mergedExecPath = path.join(mergedDir, 'merged.exec');
-  const xmlPath = path.join(mergedDir, 'merged_report.xml');
+  const java = getJavaBin();
 
   // 解压 classfiles（如果尚未解压）
   const classfilesDir = path.join(buildDir, 'classfiles');
@@ -142,15 +162,37 @@ export async function mergeAndroidCoverage(
     execSync(`unzip -o "${classfilesZipPath}" -d "${classfilesDir}"`, { timeout: 60000, stdio: 'pipe' });
   }
 
-  // Step 1: 合并所有 .ec → merged.exec
+  // Step 1: 合并所有 .ec → merged.exec（不管单仓库还是多模块，探针数据本来就是同一个进程里
+  // 收集的，不分模块，所以只需要合并一次）
   const quotedPaths = ecPaths.map(p => `"${p}"`).join(' ');
-  const java = getJavaBin();
   const mergeCmd = `${java} -jar "${jacocoCliPath}" merge ${quotedPaths} --destfile "${mergedExecPath}"`;
   execSync(mergeCmd, { timeout: 120000, stdio: 'pipe' });
 
   // Step 2: 生成 XML 报告
-  const reportCmd = `${java} -jar "${jacocoCliPath}" report "${mergedExecPath}" --classfiles "${classfilesDir}" --xml "${xmlPath}"`;
-  execSync(reportCmd, { timeout: 120000, stdio: 'pipe' });
+  const manifestPath = path.join(classfilesDir, 'manifest.json');
+  if (!fs.existsSync(manifestPath)) {
+    // 单仓库项目：老行为，一个 classfiles 目录出一份报告
+    const xmlPath = path.join(mergedDir, 'merged_report.xml');
+    const reportCmd = `${java} -jar "${jacocoCliPath}" report "${mergedExecPath}" --classfiles "${classfilesDir}" --xml "${xmlPath}"`;
+    execSync(reportCmd, { timeout: 120000, stdio: 'pipe' });
+    return { reportPath: xmlPath };
+  }
 
-  return xmlPath;
+  // 多模块项目：manifest 列出的每个模块各自的 class 目录，对同一份 merged.exec
+  // 分别跑一次 report——这样每份 XML 天然只包含这个模块自己的类，不需要事后按包名猜归属
+  const manifest: { entries: ClassfilesManifestEntry[] } = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+  const modules: { module: string; xmlPath: string; repositoryUrl?: string; commitHash?: string }[] = [];
+  for (const entry of manifest.entries) {
+    const moduleClassDir = path.join(classfilesDir, entry.classRoot);
+    const xmlPath = path.join(mergedDir, `${entry.module}_report.xml`);
+    const reportCmd = `${java} -jar "${jacocoCliPath}" report "${mergedExecPath}" --classfiles "${moduleClassDir}" --xml "${xmlPath}"`;
+    execSync(reportCmd, { timeout: 120000, stdio: 'pipe' });
+    modules.push({ module: entry.module, xmlPath, repositoryUrl: entry.repositoryUrl, commitHash: entry.commitHash });
+  }
+
+  if (modules.length === 0) {
+    throw new Error('classfiles.zip manifest.json has no entries');
+  }
+
+  return { reportPath: modules[0].xmlPath, modules };
 }

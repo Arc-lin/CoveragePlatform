@@ -23,6 +23,22 @@ export interface ICoverageReport extends Document {
   reportPath?: string;
   buildId?: mongoose.Types.ObjectId;
   source: 'manual' | 'auto';
+  // 多仓库组件化项目（目前只有 Android 用）：按模块/仓库拆分的覆盖率汇总，
+  // 整份报告的 lineCoverage/incrementalCoverage 等字段是这些模块按行数加权聚合出来的
+  moduleCoverages?: {
+    module: string;
+    repositoryUrl?: string;
+    commitHash?: string;
+    lineCoverage: number;
+    functionCoverage: number;
+    branchCoverage: number;
+    incrementalCoverage?: number;
+    totalLines: number;
+    coveredLines: number;
+    // 这个模块自己的 JaCoCo XML 路径——查某个文件的行级覆盖率时，必须用这个文件所属
+    // 模块自己的报告，不能直接用整份报告顶层的 reportPath（那只是第一个模块的报告）
+    reportPath?: string;
+  }[];
   createdAt: Date;
 }
 
@@ -41,6 +57,12 @@ export interface IBuild extends Document {
   // 组件化项目：壳工程仓库里拉不到的文件，按这份清单依次尝试各组件自己的仓库 + commit。
   // 每个组件各自的 commitHash（不是 buildKey 复合指纹），用于直接去对应仓库拉源码
   componentRepos?: { name: string; repositoryUrl: string; commitHash: string }[];
+  // 多仓库组件化项目（目前只有 Android Gradle 多模块用）：按模块拆分的 git diff，
+  // 用于按模块分别计算增量覆盖率再加权汇总。单仓库项目继续只用上面那个全量 gitDiff
+  moduleDiffs?: { module: string; diff: string }[];
+  // 原始的 build-fingerprint.json（构建身份计算依据），纯存档/排查用，不参与匹配逻辑——
+  // 匹配逻辑统一走 buildKey（= sha256(build-fingerprint.json) 或单仓库项目的 commitHash）
+  buildFingerprint?: string;
   binaryPath: string;
   // iOS 专用：以独立动态 framework 形式集成的组件二进制路径（上传 .ipa 时自动从
   // Frameworks/ 目录提取），llvm-cov export 需要同时拿到这些二进制才能解析出组件源码覆盖率
@@ -75,6 +97,9 @@ export interface IFileCoverage extends Document {
   totalLines: number;
   coveredLines: number;
   lines?: { lineNumber: number; isCovered: boolean; coveredInstructions?: number; missedInstructions?: number }[];
+  // 多仓库组件化项目：这个文件属于哪个模块（对应 moduleCoverages[].module），
+  // 单仓库项目不传，前端没有模块分组时按"未分组"处理
+  module?: string;
   createdAt: Date;
 }
 
@@ -101,6 +126,19 @@ const CoverageReportSchema = new Schema<ICoverageReport>({
   reportPath: { type: String },
   buildId: { type: Schema.Types.ObjectId, ref: 'Build' },
   source: { type: String, enum: ['manual', 'auto'], default: 'manual' },
+  moduleCoverages: [{
+    module: { type: String, required: true },
+    repositoryUrl: { type: String },
+    commitHash: { type: String },
+    lineCoverage: { type: Number, required: true },
+    functionCoverage: { type: Number, required: true },
+    branchCoverage: { type: Number, required: true },
+    incrementalCoverage: { type: Number },
+    totalLines: { type: Number, required: true },
+    coveredLines: { type: Number, required: true },
+    reportPath: { type: String },
+    _id: false
+  }],
   createdAt: { type: Date, default: Date.now }
 });
 
@@ -117,6 +155,7 @@ const FileCoverageSchema = new Schema<IFileCoverage>({
     coveredInstructions: Number,
     missedInstructions: Number
   }],
+  module: { type: String },
   createdAt: { type: Date, default: Date.now }
 });
 
@@ -145,6 +184,12 @@ const BuildSchema = new Schema<IBuild>({
     commitHash: { type: String, required: true },
     _id: false
   }],
+  moduleDiffs: [{
+    module: { type: String, required: true },
+    diff: { type: String, required: true },
+    _id: false
+  }],
+  buildFingerprint: { type: String },
   binaryPath: { type: String, required: true },
   frameworkBinaryPaths: [{ type: String }],
   status: { type: String, required: true, enum: ['ready', 'processing', 'error'], default: 'ready' },

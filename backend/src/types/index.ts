@@ -24,6 +24,20 @@ export interface CoverageReport {
   reportPath?: string;
   buildId?: string;
   source?: 'manual' | 'auto';
+  // 多仓库组件化项目（目前只有 Android 用）：按模块/仓库拆分的覆盖率汇总，
+  // 整份报告的 lineCoverage/incrementalCoverage 等字段是这些模块按行数加权聚合出来的
+  moduleCoverages?: {
+    module: string;
+    repositoryUrl?: string;
+    commitHash?: string;
+    lineCoverage: number;
+    functionCoverage: number;
+    branchCoverage: number;
+    incrementalCoverage?: number;
+    totalLines: number;
+    coveredLines: number;
+    reportPath?: string;
+  }[];
   createdAt: string;
 }
 
@@ -41,6 +55,11 @@ export interface Build {
   gitDiff?: string;
   // 组件化项目：壳工程仓库拉不到的文件，依次尝试各组件自己的仓库 + commit
   componentRepos?: { name: string; repositoryUrl: string; commitHash: string }[];
+  // 多仓库组件化项目（目前只有 Android Gradle 多模块用）：按模块拆分的 git diff，
+  // 用于按模块分别计算增量覆盖率再加权汇总。单仓库项目继续只用上面那个全量 gitDiff
+  moduleDiffs?: { module: string; diff: string }[];
+  // 原始的 build-fingerprint.json，纯存档/排查用，不参与匹配逻辑（匹配走 buildKey）
+  buildFingerprint?: string;
   binaryPath: string;
   // iOS 专用：以独立动态 framework 形式集成的组件，覆盖率映射数据在它们自己的二进制里，
   // 不在主 App 二进制里——上传 .ipa 时自动从 Frameworks/ 目录提取，llvm-cov export 需要
@@ -78,6 +97,7 @@ export interface FileCoverage {
   totalLines: number;
   coveredLines: number;
   lines?: FileCoverageLine[];
+  module?: string;
 }
 
 // 行级覆盖率数据

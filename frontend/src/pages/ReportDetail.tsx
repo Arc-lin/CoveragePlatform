@@ -24,6 +24,7 @@ const ReportDetail: React.FC = () => {
   const [showIncremental, setShowIncremental] = useState(false);
   const [loadingIncremental, setLoadingIncremental] = useState(false);
   const [showFullCoverage, setShowFullCoverage] = useState(false);
+  const [moduleFilter, setModuleFilter] = useState<string | null>(null);
 
   useEffect(() => {
     if (id) {
@@ -136,8 +137,11 @@ const ReportDetail: React.FC = () => {
   };
 
 
-  // 获取当前显示的文件列表
-  const currentFiles = showIncremental ? incrementalFiles : allFiles;
+  // 获取当前显示的文件列表（多仓库组件化项目：点了某个模块的话只看这个模块的文件——
+  // 增量文件列表目前没有按模块打标，筛选只对全量文件列表生效）
+  const currentFiles = showIncremental
+    ? incrementalFiles
+    : allFiles.filter((f) => !moduleFilter || f.module === moduleFilter);
 
   if (loading) {
     return (
@@ -329,6 +333,61 @@ const ReportDetail: React.FC = () => {
         </Card.Body>
       </Card>
 
+      {/* 多仓库组件化项目：按模块/仓库拆分的覆盖率汇总 */}
+      {report.moduleCoverages && report.moduleCoverages.length > 0 && (
+        <Card className="border-0 shadow-sm mb-4">
+          <Card.Header className="bg-light">
+            <h6 className="mb-0"><i className="bi bi-diagram-3 me-2"></i>Module Coverage</h6>
+          </Card.Header>
+          <Card.Body className="p-0">
+            <table className="table table-hover mb-0">
+              <thead>
+                <tr>
+                  <th>Module</th>
+                  <th>Line Coverage</th>
+                  <th>Function Coverage</th>
+                  <th>Branch Coverage</th>
+                  <th>Incremental Coverage</th>
+                  <th>Lines</th>
+                </tr>
+              </thead>
+              <tbody>
+                {report.moduleCoverages.map((m) => (
+                  <tr
+                    key={m.module}
+                    role="button"
+                    onClick={() => setModuleFilter(moduleFilter === m.module ? null : m.module)}
+                    className={moduleFilter === m.module ? 'table-active' : ''}
+                  >
+                    <td>
+                      <Badge bg="secondary" className="me-2">{m.module}</Badge>
+                      {m.repositoryUrl && (
+                        <small className="text-muted">{m.repositoryUrl.replace(/^https?:\/\//, '')}</small>
+                      )}
+                    </td>
+                    <td>{getCoverageBadge(m.lineCoverage)}</td>
+                    <td>{getCoverageBadge(m.functionCoverage)}</td>
+                    <td>{getCoverageBadge(m.branchCoverage)}</td>
+                    <td>{m.incrementalCoverage !== undefined ? getCoverageBadge(m.incrementalCoverage) : <span className="text-muted">—</span>}</td>
+                    <td className="text-muted">{m.coveredLines}/{m.totalLines}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Card.Body>
+          {moduleFilter && (
+            <Card.Footer className="py-2">
+              <small className="text-muted">
+                只看「{moduleFilter}」模块的文件——
+                <Button variant="link" size="sm" className="p-0 align-baseline" onClick={() => setModuleFilter(null)}>
+                  清除筛选
+                </Button>
+              </small>
+            </Card.Footer>
+          )}
+        </Card>
+      )}
+
       {/* Incremental Coverage Analysis - 只在无 gitDiff 时显示手动输入 */}
       {!report?.gitDiff && (
         <Card className="border-0 shadow-sm mb-4">
@@ -435,9 +494,12 @@ const ReportDetail: React.FC = () => {
                   >
                     <div className="d-flex justify-content-between align-items-center">
                       <div className="text-truncate" style={{ maxWidth: '60%' }}>
+                        {file.module && (
+                          <Badge bg="light" text="dark" className="me-1 border">{file.module}</Badge>
+                        )}
                         <small title={file.filePath}>{file.filePath.split('/').pop()}</small>
                       </div>
-                      <Badge 
+                      <Badge
                         bg={getCoverageColor(file.lineCoverage)}
                         className="ms-2"
                       >

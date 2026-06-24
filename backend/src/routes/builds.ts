@@ -12,6 +12,143 @@ import { Build } from '../types';
 
 const router = Router();
 
+interface MergedFileCoverage {
+  filePath: string;
+  lineCoverage: number;
+  totalLines: number;
+  coveredLines: number;
+  module?: string;
+}
+
+interface MergedModuleCoverage {
+  module: string;
+  repositoryUrl?: string;
+  commitHash?: string;
+  lineCoverage: number;
+  functionCoverage: number;
+  branchCoverage: number;
+  incrementalCoverage?: number;
+  totalLines: number;
+  coveredLines: number;
+  reportPath?: string;
+}
+
+interface MergedCoverageResult {
+  lineCoverage: number;
+  functionCoverage: number;
+  branchCoverage: number;
+  incrementalCoverage?: number;
+  files: MergedFileCoverage[];
+  moduleCoverages?: MergedModuleCoverage[];
+  reportPath: string;
+}
+
+// 按变更行数加权平均，跟现有单仓库逻辑保持一致的近似方式（也用在多模块场景里按模块加权聚合）
+async function computeWeightedIncremental(reportPath: string, diff: string): Promise<number | undefined> {
+  const incrementalFiles = await getIncrementalFiles(reportPath, diff);
+  if (incrementalFiles.length === 0) return undefined;
+  const totalChanged = incrementalFiles.reduce((s, f) => s + f.changedLines.length, 0);
+  if (totalChanged === 0) return 0;
+  return parseFloat(
+    (incrementalFiles.reduce((s, f) => s + (f.incrementalCoverage || 0) * f.changedLines.length, 0) / totalChanged).toFixed(2)
+  );
+}
+
+// 合并 + 解析，统一处理单仓库（iOS / 老 Android）和多模块 Android 两种情况——
+// 多模块时把每个模块各自的 XML 单独解析，整体数字按各模块的行数加权聚合（跟项目里其它地方
+// 用变更行数加权聚合增量覆盖率是同一套近似思路，不引入新的聚合口径）
+async function mergeAndComputeCoverage(build: Build, buildDir: string, rawFilePaths: string[]): Promise<MergedCoverageResult> {
+  if (build.platform === 'ios') {
+    const reportPath = await mergeIOSCoverage(buildDir, [build.binaryPath, ...(build.frameworkBinaryPaths || [])], rawFilePaths);
+    const data = await parseIOSCoverage(reportPath, path.extname(reportPath).toLowerCase());
+    const incrementalCoverage = build.gitDiff ? await computeWeightedIncremental(reportPath, build.gitDiff) : undefined;
+    return {
+      lineCoverage: data.lineCoverage,
+      functionCoverage: data.functionCoverage,
+      branchCoverage: data.branchCoverage,
+      incrementalCoverage,
+      files: data.files || [],
+      reportPath
+    };
+  }
+
+  const androidResult = await mergeAndroidCoverage(buildDir, build.binaryPath, rawFilePaths);
+
+  if (!androidResult.modules) {
+    // 单仓库项目：老行为，零改动
+    const reportPath = androidResult.reportPath;
+    const data = await parseAndroidCoverage(reportPath, '.xml');
+    const incrementalCoverage = build.gitDiff ? await computeWeightedIncremental(reportPath, build.gitDiff) : undefined;
+    return {
+      lineCoverage: data.lineCoverage,
+      functionCoverage: data.functionCoverage,
+      branchCoverage: data.branchCoverage,
+      incrementalCoverage,
+      files: data.files || [],
+      reportPath
+    };
+  }
+
+  // 多模块项目：每个模块各自的 XML 单独解析 + 单独算增量（按 build.moduleDiffs 里同名模块匹配），
+  // 整体数字 / 文件列表是所有模块的聚合
+  const moduleDiffMap = new Map((build.moduleDiffs || []).map(d => [d.module, d.diff]));
+  const files: MergedFileCoverage[] = [];
+  const moduleCoverages: MergedModuleCoverage[] = [];
+  let totalLines = 0, weightedLine = 0, weightedFn = 0, weightedBranch = 0;
+  let totalChanged = 0, weightedChangedCovered = 0;
+
+  for (const m of androidResult.modules) {
+    const data = await parseAndroidCoverage(m.xmlPath, '.xml');
+    const moduleFiles = data.files || [];
+    const moduleTotalLines = moduleFiles.reduce((s, f) => s + f.totalLines, 0);
+    const moduleCoveredLines = moduleFiles.reduce((s, f) => s + f.coveredLines, 0);
+
+    for (const f of moduleFiles) {
+      files.push({ ...f, module: m.module });
+    }
+
+    let moduleIncremental: number | undefined;
+    const moduleDiff = moduleDiffMap.get(m.module);
+    if (moduleDiff) {
+      moduleIncremental = await computeWeightedIncremental(m.xmlPath, moduleDiff);
+      if (moduleIncremental !== undefined) {
+        const incrementalFiles = await getIncrementalFiles(m.xmlPath, moduleDiff);
+        const changed = incrementalFiles.reduce((s, f) => s + f.changedLines.length, 0);
+        totalChanged += changed;
+        weightedChangedCovered += moduleIncremental * changed;
+      }
+    }
+
+    moduleCoverages.push({
+      module: m.module,
+      repositoryUrl: m.repositoryUrl,
+      commitHash: m.commitHash,
+      lineCoverage: data.lineCoverage,
+      functionCoverage: data.functionCoverage,
+      branchCoverage: data.branchCoverage,
+      incrementalCoverage: moduleIncremental,
+      totalLines: moduleTotalLines,
+      coveredLines: moduleCoveredLines,
+      reportPath: m.xmlPath
+    });
+
+    totalLines += moduleTotalLines;
+    weightedLine += data.lineCoverage * moduleTotalLines;
+    weightedFn += data.functionCoverage * moduleTotalLines;
+    weightedBranch += data.branchCoverage * moduleTotalLines;
+  }
+
+  return {
+    lineCoverage: totalLines > 0 ? parseFloat((weightedLine / totalLines).toFixed(2)) : 0,
+    functionCoverage: totalLines > 0 ? parseFloat((weightedFn / totalLines).toFixed(2)) : 0,
+    branchCoverage: totalLines > 0 ? parseFloat((weightedBranch / totalLines).toFixed(2)) : 0,
+    incrementalCoverage: totalChanged > 0 ? parseFloat((weightedChangedCovered / totalChanged).toFixed(2)) : undefined,
+    files,
+    moduleCoverages,
+    reportPath: androidResult.reportPath
+  };
+}
+
 // === multer 配置：构建产物上传 ===
 const binaryStorage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -305,6 +442,29 @@ router.post('/', binaryUpload.single('binary'), async (req: Request, res: Respon
       }
     }
 
+    // 多仓库组件化项目（目前只有 Android Gradle 多模块 + Maven AAR 用）：按模块拆分的 git diff，
+    // JSON 字符串形式传，跟 classfiles.zip 里 manifest.json 列出的 module 名一一对应——
+    // 上传时用同一份 merged.exec 对每个模块的 class 目录各跑一次 jacococli report，
+    // 再用这里对应模块的 diff 算这个模块自己的增量覆盖率，最后按行数加权聚合成整体数字
+    let moduleDiffs: { module: string; diff: string }[] | undefined;
+    if (req.body.moduleDiffs) {
+      try {
+        const parsed = JSON.parse(req.body.moduleDiffs);
+        if (Array.isArray(parsed)) {
+          moduleDiffs = parsed.filter(
+            (d) => d && typeof d.module === 'string' && typeof d.diff === 'string'
+          );
+        }
+      } catch {
+        fs.unlinkSync(req.file.path);
+        return res.status(400).json({ success: false, message: 'Invalid moduleDiffs JSON' });
+      }
+    }
+
+    // 原始的 build-fingerprint.json，纯存档/排查用（构建身份匹配始终走 buildKey，
+    // 不重新解析这个字段），允许传任意 JSON 字符串，格式不做强校验
+    const buildFingerprint: string | undefined = req.body.buildFingerprint;
+
     if (!projectId || !commitHash || !branch) {
       fs.unlinkSync(req.file.path);
       return res.status(400).json({
@@ -454,6 +614,8 @@ router.post('/', binaryUpload.single('binary'), async (req: Request, res: Respon
         buildVersion,
         gitDiff,
         componentRepos,
+        moduleDiffs,
+        buildFingerprint,
         binaryPath: permanentBinaryPath,
         frameworkBinaryPaths,
         status: 'ready',
@@ -476,6 +638,8 @@ router.post('/', binaryUpload.single('binary'), async (req: Request, res: Respon
         buildVersion,
         gitDiff,
         componentRepos,
+        moduleDiffs,
+        buildFingerprint,
         binaryPath: permanentBinaryPath,
         frameworkBinaryPaths,
         status: 'ready'
@@ -594,66 +758,34 @@ router.post('/:buildId/raw-coverage', rawUpload.single('file'), async (req: Requ
           throw new Error('No valid raw files found for merge');
         }
 
-        // 执行转换
-        let reportPath: string;
-        if (build.platform === 'ios') {
-          reportPath = await mergeIOSCoverage(buildDir, [build.binaryPath, ...(build.frameworkBinaryPaths || [])], rawFilePaths);
-        } else {
-          reportPath = await mergeAndroidCoverage(buildDir, build.binaryPath, rawFilePaths);
-        }
-
-        // 解析合并后的覆盖率文件
-        const fileExt = path.extname(reportPath).toLowerCase();
-        let coverageData;
-        if (build.platform === 'ios') {
-          coverageData = await parseIOSCoverage(reportPath, fileExt);
-        } else {
-          coverageData = await parseAndroidCoverage(reportPath, fileExt);
-        }
+        // 执行转换 + 解析（单仓库 / 多模块都走这一个函数，多模块时已经聚合好整体数字）
+        const merged = await mergeAndComputeCoverage(build, buildDir, rawFilePaths);
+        const reportPath = merged.reportPath;
+        const coverageData = merged;
 
         // 创建或更新 CoverageReport
         if (build.mergedReportId) {
           // 更新已有报告
           await mongoDb.deleteFileCoveragesByReport(build.mergedReportId);
           await mongoDb.updateReport(build.mergedReportId, {
-            lineCoverage: coverageData.lineCoverage,
-            functionCoverage: coverageData.functionCoverage,
-            branchCoverage: coverageData.branchCoverage,
+            lineCoverage: merged.lineCoverage,
+            functionCoverage: merged.functionCoverage,
+            branchCoverage: merged.branchCoverage,
+            incrementalCoverage: merged.incrementalCoverage,
+            moduleCoverages: merged.moduleCoverages,
             reportPath
           });
 
           // 重新添加文件覆盖率
-          if (coverageData.files) {
-            for (const file of coverageData.files) {
-              await mongoDb.addFileCoverage({
-                reportId: build.mergedReportId,
-                filePath: file.filePath,
-                lineCoverage: file.lineCoverage,
-                totalLines: file.totalLines,
-                coveredLines: file.coveredLines
-              });
-            }
-          }
-
-          // 如果有 gitDiff，计算增量覆盖率（按行数加权平均）
-          if (build.gitDiff) {
-            try {
-              const incrementalFiles = await getIncrementalFiles(reportPath, build.gitDiff);
-              if (incrementalFiles.length > 0) {
-                const totalChanged = incrementalFiles.reduce((s, f) => s + f.changedLines.length, 0);
-                const incrementalCoverage = totalChanged > 0
-                  ? parseFloat(
-                      (incrementalFiles.reduce((s, f) => s + (f.incrementalCoverage || 0) * f.changedLines.length, 0) / totalChanged).toFixed(2)
-                    )
-                  : 0;
-                await mongoDb.updateReport(build.mergedReportId, {
-                  incrementalCoverage,
-                  gitDiff: build.gitDiff
-                });
-              }
-            } catch (e) {
-              console.error('Failed to compute incremental coverage:', e);
-            }
+          for (const file of merged.files) {
+            await mongoDb.addFileCoverage({
+              reportId: build.mergedReportId,
+              filePath: file.filePath,
+              lineCoverage: file.lineCoverage,
+              totalLines: file.totalLines,
+              coveredLines: file.coveredLines,
+              module: file.module
+            });
           }
 
           coverageResult = coverageData;
@@ -663,9 +795,11 @@ router.post('/:buildId/raw-coverage', rawUpload.single('file'), async (req: Requ
             projectId: build.projectId,
             commitHash: build.commitHash,
             branch: build.branch,
-            lineCoverage: coverageData.lineCoverage,
-            functionCoverage: coverageData.functionCoverage,
-            branchCoverage: coverageData.branchCoverage,
+            lineCoverage: merged.lineCoverage,
+            functionCoverage: merged.functionCoverage,
+            branchCoverage: merged.branchCoverage,
+            incrementalCoverage: merged.incrementalCoverage,
+            moduleCoverages: merged.moduleCoverages,
             gitDiff: build.gitDiff,
             reportPath,
             buildId: build.id,
@@ -673,34 +807,15 @@ router.post('/:buildId/raw-coverage', rawUpload.single('file'), async (req: Requ
           });
 
           // 添加文件覆盖率
-          if (coverageData.files) {
-            for (const file of coverageData.files) {
-              await mongoDb.addFileCoverage({
-                reportId: report.id,
-                filePath: file.filePath,
-                lineCoverage: file.lineCoverage,
-                totalLines: file.totalLines,
-                coveredLines: file.coveredLines
-              });
-            }
-          }
-
-          // 如果有 gitDiff，计算增量覆盖率（按行数加权平均）
-          if (build.gitDiff) {
-            try {
-              const incrementalFiles = await getIncrementalFiles(reportPath, build.gitDiff);
-              if (incrementalFiles.length > 0) {
-                const totalChanged = incrementalFiles.reduce((s, f) => s + f.changedLines.length, 0);
-                const incrementalCoverage = totalChanged > 0
-                  ? parseFloat(
-                      (incrementalFiles.reduce((s, f) => s + (f.incrementalCoverage || 0) * f.changedLines.length, 0) / totalChanged).toFixed(2)
-                    )
-                  : 0;
-                await mongoDb.updateReport(report.id, { incrementalCoverage });
-              }
-            } catch (e) {
-              console.error('Failed to compute incremental coverage:', e);
-            }
+          for (const file of merged.files) {
+            await mongoDb.addFileCoverage({
+              reportId: report.id,
+              filePath: file.filePath,
+              lineCoverage: file.lineCoverage,
+              totalLines: file.totalLines,
+              coveredLines: file.coveredLines,
+              module: file.module
+            });
           }
 
           // 关联 Build
@@ -896,61 +1011,30 @@ router.post('/:buildId/remerge', async (req: Request, res: Response) => {
         }
 
         const buildDir = path.dirname(path.dirname(build.binaryPath));
-        let reportPath: string;
-        if (build.platform === 'ios') {
-          reportPath = await mergeIOSCoverage(buildDir, [build.binaryPath, ...(build.frameworkBinaryPaths || [])], rawFilePaths);
-        } else {
-          reportPath = await mergeAndroidCoverage(buildDir, build.binaryPath, rawFilePaths);
-        }
-
-        const fileExt = path.extname(reportPath).toLowerCase();
-        let coverageData;
-        if (build.platform === 'ios') {
-          coverageData = await parseIOSCoverage(reportPath, fileExt);
-        } else {
-          coverageData = await parseAndroidCoverage(reportPath, fileExt);
-        }
+        // 合并 + 解析（单仓库 / 多模块都走这一个函数，跟 raw-coverage 上传流程保持一致）
+        const merged = await mergeAndComputeCoverage(build, buildDir, rawFilePaths);
+        const reportPath = merged.reportPath;
 
         if (build.mergedReportId) {
           await mongoDb.deleteFileCoveragesByReport(build.mergedReportId);
           await mongoDb.updateReport(build.mergedReportId, {
-            lineCoverage: coverageData.lineCoverage,
-            functionCoverage: coverageData.functionCoverage,
-            branchCoverage: coverageData.branchCoverage,
+            lineCoverage: merged.lineCoverage,
+            functionCoverage: merged.functionCoverage,
+            branchCoverage: merged.branchCoverage,
+            incrementalCoverage: merged.incrementalCoverage,
+            moduleCoverages: merged.moduleCoverages,
             reportPath
           });
 
-          if (coverageData.files) {
-            for (const file of coverageData.files) {
-              await mongoDb.addFileCoverage({
-                reportId: build.mergedReportId,
-                filePath: file.filePath,
-                lineCoverage: file.lineCoverage,
-                totalLines: file.totalLines,
-                coveredLines: file.coveredLines
-              });
-            }
-          }
-
-          // 重新计算增量覆盖率（与 raw-coverage 上传流程保持一致）
-          if (build.gitDiff) {
-            try {
-              const incrementalFiles = await getIncrementalFiles(reportPath, build.gitDiff);
-              if (incrementalFiles.length > 0) {
-                const totalChanged = incrementalFiles.reduce((s, f) => s + f.changedLines.length, 0);
-                const incrementalCoverage = totalChanged > 0
-                  ? parseFloat(
-                      (incrementalFiles.reduce((s, f) => s + (f.incrementalCoverage || 0) * f.changedLines.length, 0) / totalChanged).toFixed(2)
-                    )
-                  : 0;
-                await mongoDb.updateReport(build.mergedReportId, {
-                  incrementalCoverage,
-                  gitDiff: build.gitDiff
-                });
-              }
-            } catch (e) {
-              console.error('Failed to compute incremental coverage during remerge:', e);
-            }
+          for (const file of merged.files) {
+            await mongoDb.addFileCoverage({
+              reportId: build.mergedReportId,
+              filePath: file.filePath,
+              lineCoverage: file.lineCoverage,
+              totalLines: file.totalLines,
+              coveredLines: file.coveredLines,
+              module: file.module
+            });
           }
         }
 

@@ -21,7 +21,22 @@ export interface CoverageReport {
   reportPath?: string;
   buildId?: string;
   source?: 'manual' | 'auto';
+  // 多仓库组件化项目（目前只有 Android 用）：按模块/仓库拆分的覆盖率汇总
+  moduleCoverages?: ModuleCoverage[];
   createdAt: string;
+}
+
+export interface ModuleCoverage {
+  module: string;
+  repositoryUrl?: string;
+  commitHash?: string;
+  lineCoverage: number;
+  functionCoverage: number;
+  branchCoverage: number;
+  incrementalCoverage?: number;
+  totalLines: number;
+  coveredLines: number;
+  reportPath?: string;
 }
 
 export interface FileCoverage {
@@ -31,6 +46,7 @@ export interface FileCoverage {
   lineCoverage: number;
   totalLines: number;
   coveredLines: number;
+  module?: string;
 }
 
 export interface UploadResponse {
@@ -46,6 +62,7 @@ export interface FileInfo {
   coveredLines: number;
   changedLines?: number[];
   incrementalCoverage?: number;
+  module?: string;
 }
 
 export interface LineCoverageDetail {

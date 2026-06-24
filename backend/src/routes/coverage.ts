@@ -340,15 +340,22 @@ router.get('/:id/file', async (req: Request, res: Response) => {
       });
     }
 
+    // 多模块项目：这个文件属于哪个模块，就必须用那个模块自己的 JaCoCo XML 去查行级覆盖率——
+    // report.reportPath 顶层只是第一个模块的报告，其它模块的文件在里面是查不到的
+    const moduleReportPath = dbFile?.module
+      ? report.moduleCoverages?.find(m => m.module === dbFile.module)?.reportPath
+      : undefined;
+    const targetReportPath = moduleReportPath || report.reportPath;
+
     // 数据库没有则从报告文件解析
-    if (!report.reportPath) {
+    if (!targetReportPath) {
       return res.status(404).json({
         success: false,
         message: 'Report file not found'
       });
     }
 
-    const fileCoverage = await getFileLineCoverage(report.reportPath, filePath);
+    const fileCoverage = await getFileLineCoverage(targetReportPath, filePath);
 
     if (!fileCoverage) {
       return res.status(404).json({
