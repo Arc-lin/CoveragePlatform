@@ -523,6 +523,14 @@ router.post('/', binaryUpload.fields([{ name: 'binary', maxCount: 1 }, { name: '
       ? existingBuild.id
       : uuidv4().replace(/-/g, '').substring(0, 24);
 
+    // 复用已有 Build 时，下面"清空目录重新解压"这段操作还要跟这个 buildId 的合并锁
+    // （raw-coverage/remerge 用的就是这把锁）互斥——build-create 锁只能防止两个
+    // POST /api/builds 互相打架，防不住一个 POST /api/builds 复用跟一个正在进行中的
+    // 合并同时操作同一批文件/数据库记录（两把锁如果 key 不一样，对同一个 buildId 来说
+    // 就是两把互不相认的锁，照样会撞车）。新建 Build（还没有 buildId）不需要这层，
+    // 没有正在进行中的合并可以跟它抢
+    const proceed = async () => {
+
     // 创建 Build 目录结构
     const buildDir = path.join(__dirname, '../../builds', projectId, buildId);
     const binaryDir = path.join(buildDir, 'binary');
@@ -725,6 +733,13 @@ router.post('/', binaryUpload.fields([{ name: 'binary', maxCount: 1 }, { name: '
     }
 
     res.status(201).json({ success: true, data: build });
+    };
+
+    if (existingBuild) {
+      await withBuildLock(buildId, proceed);
+    } else {
+      await proceed();
+    }
     });
 
   } catch (error) {
@@ -1056,8 +1071,10 @@ router.post('/:buildId/remerge', async (req: Request, res: Response) => {
       return res.status(404).json({ success: false, message: 'Build not found' });
     }
 
-    const allRawUploads = await mongoDb.getRawUploadsByBuild(build.id);
-    if (allRawUploads.length === 0) {
+    // 这里只是请求进锁之前的快速校验（没有任何上传过的 raw 文件，没必要排队等锁）；
+    // 真正用来跑合并的列表在锁里重新读一次最新的，见下面 allRawUploads
+    const initialRawUploads = await mongoDb.getRawUploadsByBuild(build.id);
+    if (initialRawUploads.length === 0) {
       return res.status(400).json({ success: false, message: 'No raw uploads to merge' });
     }
 
@@ -1074,6 +1091,8 @@ router.post('/:buildId/remerge', async (req: Request, res: Response) => {
           throw new Error('Build not found during remerge (deleted concurrently?)');
         }
 
+        // 同样重新读一次最新的 raw 上传列表，不用锁外那份可能已经过期的快照
+        const allRawUploads = await mongoDb.getRawUploadsByBuild(build.id);
         const rawFilePaths = allRawUploads
           .filter(r => fs.existsSync(r.filePath))
           .map(r => r.filePath);

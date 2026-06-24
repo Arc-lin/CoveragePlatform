@@ -47,7 +47,16 @@ export async function withBuildLock(key: string, fn: () => Promise<unknown>): Pr
   const prev = buildLocks.get(key) || Promise.resolve();
   const current = prev.then(fn, fn);
   buildLocks.set(key, current);
-  await current;
+  try {
+    await current;
+  } finally {
+    // 没有其它请求排在自己后面（map 里这个 key 还指向自己这个 promise）就清掉，
+    // 不然 build-create:<projectId>:<buildKey> 这种 key 一个构建身份一个，越积越多，
+    // 进程长期运行下去会无限增长——清的时候用 === 比较是不是自己，避免误删后面排队的
+    if (buildLocks.get(key) === current) {
+      buildLocks.delete(key);
+    }
+  }
 }
 
 /**
