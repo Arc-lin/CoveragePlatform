@@ -642,15 +642,22 @@ router.get('/:id/source', async (req: Request, res: Response) => {
       });
     }
 
-    // 壳工程仓库没找到，按 Build 上记录的 componentRepos 依次试组件仓库
-    // （组件仓库目前复用壳工程项目的 accessToken，假设是同一个账号/组织下的私有仓库）
+    // 壳工程仓库没找到，按 Build 上记录的 componentRepos 依次试组件仓库。
+    // accessToken 只在组件仓库跟壳工程仓库同域名（同一个 Git 平台实例）时才复用——
+    // 不同域名说明组件托管在别的平台/账号下，壳工程的 token 对那边无意义，传过去反而有害：
+    // 比如 GitHub raw 内容接口收到一个外部/无效的 Authorization 头，会把请求当成"已认证但权限
+    // 不足"处理，对本来公开可访问的仓库返回 404，而不是忽略这个头当匿名请求处理（实测验证过）。
+    const shellParsed = parseRepositoryUrl(project.repositoryUrl);
     let triedRepos = [project.repositoryUrl];
     if (report.buildId) {
       const build = await mongoDb.getBuildById(report.buildId);
       if (build?.componentRepos) {
         for (const component of build.componentRepos) {
+          const componentParsed = parseRepositoryUrl(component.repositoryUrl);
+          const sameHost = shellParsed && componentParsed && shellParsed.host === componentParsed.host;
           const componentResult = await fetchSourceFromRepo(
-            component.repositoryUrl, component.commitHash, filePath, project.platform, project.accessToken, undefined
+            component.repositoryUrl, component.commitHash, filePath, project.platform,
+            sameHost ? project.accessToken : undefined, undefined
           );
           triedRepos.push(component.repositoryUrl);
           if (componentResult) {
