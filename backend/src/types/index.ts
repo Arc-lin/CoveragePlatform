@@ -55,9 +55,10 @@ export interface Build {
   gitDiff?: string;
   // 组件化项目：壳工程仓库拉不到的文件，依次尝试各组件自己的仓库 + commit
   componentRepos?: { name: string; repositoryUrl: string; commitHash: string }[];
-  // 多仓库组件化项目（目前只有 Android Gradle 多模块用）：按模块拆分的 git diff，
-  // 用于按模块分别计算增量覆盖率再加权汇总。单仓库项目继续只用上面那个全量 gitDiff
-  moduleDiffs?: { module: string; diff: string }[];
+  // 多仓库组件化项目（目前只有 Android Gradle 多模块用）：按模块拆分的 git diff，存的是
+  // 落盘文件路径，不是 diff 原文——diff 原文走 POST /api/builds 的 diffs.zip 文件字段上传。
+  // 单仓库项目继续只用上面那个全量 gitDiff 字符串字段，不受影响
+  moduleDiffs?: { module: string; diffPath: string }[];
   // 原始的 build-fingerprint.json，纯存档/排查用，不参与匹配逻辑（匹配走 buildKey）
   buildFingerprint?: string;
   binaryPath: string;

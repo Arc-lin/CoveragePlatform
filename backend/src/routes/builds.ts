@@ -91,7 +91,12 @@ async function mergeAndComputeCoverage(build: Build, buildDir: string, rawFilePa
 
   // 多模块项目：每个模块各自的 XML 单独解析 + 单独算增量（按 build.moduleDiffs 里同名模块匹配），
   // 整体数字 / 文件列表是所有模块的聚合
-  const moduleDiffMap = new Map((build.moduleDiffs || []).map(d => [d.module, d.diff]));
+  // diff 原文存在磁盘上（diffs.zip 上传时落盘），不是内联存在 Build 文档里，这里按需读出来
+  const moduleDiffMap = new Map(
+    (build.moduleDiffs || [])
+      .filter(d => fs.existsSync(d.diffPath))
+      .map(d => [d.module, fs.readFileSync(d.diffPath, 'utf-8')])
+  );
   const files: MergedFileCoverage[] = [];
   const moduleCoverages: MergedModuleCoverage[] = [];
   let totalLines = 0, weightedLine = 0, weightedFn = 0, weightedBranch = 0;
@@ -413,9 +418,20 @@ router.get('/pgyer-progress/:taskId', (req: Request, res: Response) => {
 // =====================================================
 // POST /api/builds — 创建 Build（开发者调用）
 // =====================================================
-router.post('/', binaryUpload.single('binary'), async (req: Request, res: Response) => {
+router.post('/', binaryUpload.fields([{ name: 'binary', maxCount: 1 }, { name: 'diffs', maxCount: 1 }]), async (req: Request, res: Response) => {
+  const reqFiles = req.files as { [fieldname: string]: Express.Multer.File[] } | undefined;
+  const binaryFile = reqFiles?.binary?.[0];
+  const diffsFile = reqFiles?.diffs?.[0];
+
+  // 出错时清理掉已经落到 uploads/ 临时目录的文件（还没移到 buildDir 之前）
+  const cleanupTempUploads = () => {
+    if (binaryFile && fs.existsSync(binaryFile.path)) fs.unlinkSync(binaryFile.path);
+    if (diffsFile && fs.existsSync(diffsFile.path)) fs.unlinkSync(diffsFile.path);
+  };
+
   try {
-    if (!req.file) {
+    if (!binaryFile) {
+      cleanupTempUploads();
       return res.status(400).json({ success: false, message: 'No binary file uploaded' });
     }
 
@@ -437,27 +453,8 @@ router.post('/', binaryUpload.single('binary'), async (req: Request, res: Respon
           );
         }
       } catch {
-        fs.unlinkSync(req.file.path);
+        cleanupTempUploads();
         return res.status(400).json({ success: false, message: 'Invalid componentRepos JSON' });
-      }
-    }
-
-    // 多仓库组件化项目（目前只有 Android Gradle 多模块 + Maven AAR 用）：按模块拆分的 git diff，
-    // JSON 字符串形式传，跟 classfiles.zip 里 manifest.json 列出的 module 名一一对应——
-    // 上传时用同一份 merged.exec 对每个模块的 class 目录各跑一次 jacococli report，
-    // 再用这里对应模块的 diff 算这个模块自己的增量覆盖率，最后按行数加权聚合成整体数字
-    let moduleDiffs: { module: string; diff: string }[] | undefined;
-    if (req.body.moduleDiffs) {
-      try {
-        const parsed = JSON.parse(req.body.moduleDiffs);
-        if (Array.isArray(parsed)) {
-          moduleDiffs = parsed.filter(
-            (d) => d && typeof d.module === 'string' && typeof d.diff === 'string'
-          );
-        }
-      } catch {
-        fs.unlinkSync(req.file.path);
-        return res.status(400).json({ success: false, message: 'Invalid moduleDiffs JSON' });
       }
     }
 
@@ -466,7 +463,7 @@ router.post('/', binaryUpload.single('binary'), async (req: Request, res: Respon
     const buildFingerprint: string | undefined = req.body.buildFingerprint;
 
     if (!projectId || !commitHash || !branch) {
-      fs.unlinkSync(req.file.path);
+      cleanupTempUploads();
       return res.status(400).json({
         success: false,
         message: 'Missing required fields: projectId, commitHash, branch'
@@ -475,14 +472,14 @@ router.post('/', binaryUpload.single('binary'), async (req: Request, res: Respon
 
     const project = await mongoDb.getProjectById(projectId);
     if (!project) {
-      fs.unlinkSync(req.file.path);
+      cleanupTempUploads();
       return res.status(404).json({ success: false, message: 'Project not found' });
     }
 
     // 检查工具可用性
     const tools = checkToolAvailability();
     if (project.platform === 'ios' && !tools.ios) {
-      fs.unlinkSync(req.file.path);
+      cleanupTempUploads();
       return res.status(503).json({
         success: false,
         message: 'iOS coverage conversion tools not available on this server',
@@ -490,7 +487,7 @@ router.post('/', binaryUpload.single('binary'), async (req: Request, res: Respon
       });
     }
     if (project.platform === 'android' && !tools.android) {
-      fs.unlinkSync(req.file.path);
+      cleanupTempUploads();
       return res.status(503).json({
         success: false,
         message: 'Android coverage conversion tools not available on this server',
@@ -501,8 +498,8 @@ router.post('/', binaryUpload.single('binary'), async (req: Request, res: Respon
     // iOS 统一只接受 .ipa，不再支持直传裸 Mach-O 二进制——组件大多以独立动态 framework
     // 形式集成（CocoaPods 默认就是这种），覆盖率映射数据在组件自己的二进制里，只传主二进制
     // 拿不到 Frameworks/ 目录，组件源码永远不会出现在覆盖率报告里（见接入文档 13 节 Q11）
-    if (project.platform === 'ios' && !req.file.originalname.endsWith('.ipa')) {
-      fs.unlinkSync(req.file.path);
+    if (project.platform === 'ios' && !binaryFile.originalname.endsWith('.ipa')) {
+      cleanupTempUploads();
       return res.status(400).json({
         success: false,
         message: 'iOS Build creation requires a full .ipa, not a raw binary. ' +
@@ -541,11 +538,11 @@ router.post('/', binaryUpload.single('binary'), async (req: Request, res: Respon
     fs.mkdirSync(mergedDir, { recursive: true });
 
     // 移动 binary 到永久位置
-    let permanentBinaryPath = path.join(binaryDir, req.file.originalname);
-    moveFile(req.file.path, permanentBinaryPath);
+    let permanentBinaryPath = path.join(binaryDir, binaryFile.originalname);
+    moveFile(binaryFile.path, permanentBinaryPath);
 
     // Android: 自动解压 classfiles.zip
-    if (project.platform === 'android' && req.file.originalname.endsWith('.zip')) {
+    if (project.platform === 'android' && binaryFile.originalname.endsWith('.zip')) {
       const classfilesDir = path.join(buildDir, 'classfiles');
       fs.mkdirSync(classfilesDir, { recursive: true });
       try {
@@ -553,10 +550,50 @@ router.post('/', binaryUpload.single('binary'), async (req: Request, res: Respon
         execSync(`unzip -o "${permanentBinaryPath}" -d "${classfilesDir}"`, { timeout: 60000, stdio: 'pipe' });
       } catch (e) {
         // 解压失败，清理
+        if (diffsFile && fs.existsSync(diffsFile.path)) fs.unlinkSync(diffsFile.path);
         fs.rmSync(buildDir, { recursive: true, force: true });
         return res.status(400).json({
           success: false,
           message: 'Failed to extract classfiles.zip',
+          error: (e as Error).message
+        });
+      }
+    }
+
+    // 多仓库组件化项目（目前只有 Android Gradle 多模块 + Maven AAR 用）：按模块拆分的 git diff，
+    // 通过 diffs.zip 文件上传（不是内联 JSON 字符串——diff 原文可能很大，跟 binary/classfiles
+    // 一样"传文件落盘、数据库只记路径"，不占用表单字段大小/MongoDB 文档大小的限制）。
+    // zip 内容：manifest.json（[{module, diffFile}]） + 每个模块各自的 diff 文本文件，
+    // module 名跟 classfiles.zip 里 manifest.json 列出的 module 一一对应
+    let moduleDiffs: { module: string; diffPath: string }[] | undefined;
+    if (diffsFile) {
+      const diffsDir = path.join(buildDir, 'diffs');
+      fs.mkdirSync(diffsDir, { recursive: true });
+      try {
+        const { execSync } = require('child_process');
+        execSync(`unzip -o "${diffsFile.path}" -d "${diffsDir}"`, { timeout: 60000, stdio: 'pipe' });
+        fs.unlinkSync(diffsFile.path);
+
+        const manifestPath = path.join(diffsDir, 'manifest.json');
+        if (!fs.existsSync(manifestPath)) {
+          throw new Error('diffs.zip is missing manifest.json');
+        }
+        const manifest: { entries: { module: string; diffFile: string }[] } = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+        if (!Array.isArray(manifest.entries)) {
+          throw new Error('diffs.zip manifest.json has no entries array');
+        }
+        moduleDiffs = manifest.entries.map((entry) => {
+          const diffPath = path.join(diffsDir, entry.diffFile);
+          if (!fs.existsSync(diffPath)) {
+            throw new Error(`diffs.zip manifest.json references missing file: ${entry.diffFile}`);
+          }
+          return { module: entry.module, diffPath };
+        });
+      } catch (e) {
+        fs.rmSync(buildDir, { recursive: true, force: true });
+        return res.status(400).json({
+          success: false,
+          message: 'Failed to extract diffs.zip',
           error: (e as Error).message
         });
       }
@@ -664,15 +701,22 @@ router.post('/', binaryUpload.single('binary'), async (req: Request, res: Respon
         build.frameworkBinaryPaths = realFrameworkBinaryPaths;
       }
 
+      if (moduleDiffs && moduleDiffs.length > 0) {
+        const realModuleDiffs = moduleDiffs.map((d) => ({
+          module: d.module,
+          diffPath: d.diffPath.replace(buildDir, realBuildDir)
+        }));
+        updates.moduleDiffs = realModuleDiffs;
+        build.moduleDiffs = realModuleDiffs;
+      }
+
       await mongoDb.updateBuild(build.id, updates);
     }
 
     res.status(201).json({ success: true, data: build });
 
   } catch (error) {
-    if (req.file && fs.existsSync(req.file.path)) {
-      fs.unlinkSync(req.file.path);
-    }
+    cleanupTempUploads();
     res.status(500).json({
       success: false,
       message: 'Failed to create build',

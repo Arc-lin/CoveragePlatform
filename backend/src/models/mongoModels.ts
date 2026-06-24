@@ -57,9 +57,12 @@ export interface IBuild extends Document {
   // 组件化项目：壳工程仓库里拉不到的文件，按这份清单依次尝试各组件自己的仓库 + commit。
   // 每个组件各自的 commitHash（不是 buildKey 复合指纹），用于直接去对应仓库拉源码
   componentRepos?: { name: string; repositoryUrl: string; commitHash: string }[];
-  // 多仓库组件化项目（目前只有 Android Gradle 多模块用）：按模块拆分的 git diff，
-  // 用于按模块分别计算增量覆盖率再加权汇总。单仓库项目继续只用上面那个全量 gitDiff
-  moduleDiffs?: { module: string; diff: string }[];
+  // 多仓库组件化项目（目前只有 Android Gradle 多模块用）：按模块拆分的 git diff，存的是
+  // 落盘文件路径，不是 diff 原文——diff 原文走 POST /api/builds 的 diffs.zip 文件字段上传，
+  // 跟 binary/classfiles 一样"传文件存磁盘、数据库只记路径"，不占用表单字段/MongoDB 文档大小
+  // 限制（之前 {module, diff} 内联存原文的设计有这个问题，已改掉）。单仓库项目继续只用上面
+  // 那个全量 gitDiff 字符串字段，不受影响
+  moduleDiffs?: { module: string; diffPath: string }[];
   // 原始的 build-fingerprint.json（构建身份计算依据），纯存档/排查用，不参与匹配逻辑——
   // 匹配逻辑统一走 buildKey（= sha256(build-fingerprint.json) 或单仓库项目的 commitHash）
   buildFingerprint?: string;
@@ -186,7 +189,7 @@ const BuildSchema = new Schema<IBuild>({
   }],
   moduleDiffs: [{
     module: { type: String, required: true },
-    diff: { type: String, required: true },
+    diffPath: { type: String, required: true },
     _id: false
   }],
   buildFingerprint: { type: String },
