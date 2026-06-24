@@ -5,8 +5,47 @@ import { parseRepositoryUrl, buildRawFileRequest } from '../utils/gitProvider';
 import https from 'https';
 import http from 'http';
 import path from 'path';
+import fs from 'fs';
+import { CoverageReport } from '../types';
 
 const router = Router();
+
+interface IncrementalFileWithModule {
+  filePath: string;
+  lineCoverage: number;
+  totalLines: number;
+  coveredLines: number;
+  changedLines: number[];
+  incrementalCoverage: number;
+  module: string;
+}
+
+// 多模块组件化报告（report.moduleCoverages 有值）没有单一的 report.gitDiff——diff 是
+// Build.moduleDiffs 按模块拆开存的。这个函数把"按模块算增量文件列表"统一封装一下：
+// 对每个模块，用它自己的 reportPath（moduleCoverages[].reportPath）+ 自己的 diff 文件内容
+// 调 getIncrementalFiles，结果打上 module 标签后拼成一个列表，跟单仓库的返回形状保持一致
+async function getIncrementalFilesForMultiModuleReport(
+  report: CoverageReport
+): Promise<IncrementalFileWithModule[]> {
+  if (!report.buildId || !report.moduleCoverages) return [];
+
+  const build = await mongoDb.getBuildById(report.buildId);
+  if (!build?.moduleDiffs) return [];
+
+  const moduleReportPaths = new Map(report.moduleCoverages.map(m => [m.module, m.reportPath]));
+
+  const results: IncrementalFileWithModule[] = [];
+  for (const d of build.moduleDiffs) {
+    const moduleReportPath = moduleReportPaths.get(d.module);
+    if (!moduleReportPath || !fs.existsSync(d.diffPath)) continue;
+    const diffContent = fs.readFileSync(d.diffPath, 'utf-8');
+    const moduleFiles = await getIncrementalFiles(moduleReportPath, diffContent);
+    for (const f of moduleFiles) {
+      results.push({ ...f, module: d.module });
+    }
+  }
+  return results;
+}
 
 // 批量获取多个项目的最新覆盖率报告（必须在 /project/:projectId 之前注册）
 router.get('/project/latest-batch', async (req: Request, res: Response) => {
@@ -93,22 +132,33 @@ router.get('/:id/incremental', async (req: Request, res: Response) => {
       });
     }
 
-    // 检查是否有 gitDiff
-    if (!report.gitDiff) {
-      return res.status(404).json({
-        success: false,
-        message: 'No git diff content stored for this report'
-      });
+    // 多模块组件化报告没有单一的 report.gitDiff，diff 按模块拆在 Build.moduleDiffs 里，
+    // 走单独的多模块增量计算；单仓库报告走老路径，不受影响
+    let files;
+    if (report.moduleCoverages && report.moduleCoverages.length > 0) {
+      files = await getIncrementalFilesForMultiModuleReport(report);
+      if (files.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: 'No module diff content stored for this report'
+        });
+      }
+    } else {
+      if (!report.gitDiff) {
+        return res.status(404).json({
+          success: false,
+          message: 'No git diff content stored for this report'
+        });
+      }
+      if (!report.reportPath) {
+        return res.status(404).json({
+          success: false,
+          message: 'Report file not found'
+        });
+      }
+      files = await getIncrementalFiles(report.reportPath, report.gitDiff);
     }
 
-    if (!report.reportPath) {
-      return res.status(404).json({
-        success: false,
-        message: 'Report file not found'
-      });
-    }
-
-    const files = await getIncrementalFiles(report.reportPath, report.gitDiff);
     const totalChangedLines = files.reduce((sum, f) => sum + (f.changedLines?.length || 0), 0);
     // 按变更行数加权平均，避免小文件高覆盖率拉高整体数字
     const averageIncrementalCoverage = totalChangedLines > 0
@@ -396,15 +446,39 @@ router.get('/:id/file/incremental', async (req: Request, res: Response) => {
       });
     }
 
-    if (!report.reportPath) {
+    // 多模块组件化报告：这个文件属于哪个模块，就要用那个模块自己的 reportPath + 自己的
+    // diff（Build.moduleDiffs 里按模块拆开存的），不能直接用报告顶层的 reportPath/gitDiff——
+    // 顶层 reportPath 只是第一个模块的报告，顶层 gitDiff 对组件化报告压根没有设置
+    let targetReportPath = report.reportPath;
+    let diffContent = report.gitDiff;
+    if (report.moduleCoverages && report.moduleCoverages.length > 0) {
+      const dbFile = await mongoDb.getFileCoverageByReportAndPath(id, filePath);
+      const moduleName = dbFile?.module;
+      const moduleEntry = moduleName
+        ? report.moduleCoverages.find(m => m.module === moduleName)
+        : undefined;
+      targetReportPath = moduleEntry?.reportPath || report.reportPath;
+
+      if (moduleName && report.buildId) {
+        const build = await mongoDb.getBuildById(report.buildId);
+        const moduleDiff = build?.moduleDiffs?.find(d => d.module === moduleName);
+        if (moduleDiff && fs.existsSync(moduleDiff.diffPath)) {
+          diffContent = fs.readFileSync(moduleDiff.diffPath, 'utf-8');
+        } else {
+          diffContent = undefined;
+        }
+      }
+    }
+
+    if (!targetReportPath) {
       return res.status(404).json({
         success: false,
         message: 'Report file not found'
       });
     }
 
-    // 检查是否有 gitDiff
-    if (!report.gitDiff) {
+    // 检查是否有 diff 内容
+    if (!diffContent) {
       return res.status(404).json({
         success: false,
         message: 'No git diff content stored for this report'
@@ -413,7 +487,7 @@ router.get('/:id/file/incremental', async (req: Request, res: Response) => {
 
     // 解析 git diff 获取该文件的变更行号
     const { parseGitDiff } = await import('../utils/coverageParser');
-    const diffFiles = parseGitDiff(report.gitDiff);
+    const diffFiles = parseGitDiff(diffContent);
     const diffFile = diffFiles.find(f => {
       if (filePath === f.filePath) return true;
       if (f.filePath.endsWith('/' + filePath)) return true;
@@ -433,7 +507,7 @@ router.get('/:id/file/incremental', async (req: Request, res: Response) => {
     }
 
     // 获取行级覆盖率，传入变更行号
-    const fileCoverage = await getFileLineCoverage(report.reportPath, filePath, diffFile.changedLines);
+    const fileCoverage = await getFileLineCoverage(targetReportPath, filePath, diffFile.changedLines);
 
     if (!fileCoverage) {
       return res.status(404).json({

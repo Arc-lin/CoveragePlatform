@@ -50,8 +50,10 @@ const ReportDetail: React.FC = () => {
         setProject(projectRes.data.data);
         setAllFiles(filesRes.data.data || []);
 
-        // 第三步（条件性）：获取增量数据
-        if (reportData.gitDiff) {
+        // 第三步（条件性）：获取增量数据。多模块组件化报告没有顶层 gitDiff
+        // （diff 按模块拆在 Build.moduleDiffs 里），但后端 /incremental 接口已经支持按
+        // moduleCoverages 算增量文件列表，所以这里两种情况都要触发
+        if (reportData.gitDiff || reportData.moduleCoverages) {
           try {
             const incrementalRes = await coverageApi.getIncrementalFilesAuto(reportId);
             if (incrementalRes.data.success) {
@@ -112,8 +114,9 @@ const ReportDetail: React.FC = () => {
       setSourceRepo(null);
       setSourceError(null);
 
-      // 并行获取覆盖率数据和源码
-      const coveragePromise = showIncremental && report?.gitDiff
+      // 并行获取覆盖率数据和源码（多模块组件化报告同样靠后端按 module 解析对应的
+      // reportPath/diff，前端只看有没有 gitDiff 或 moduleCoverages 来决定走哪条接口）
+      const coveragePromise = showIncremental && (report?.gitDiff || report?.moduleCoverages)
         ? coverageApi.getIncrementalFileDetail(id!, filePath)
         : coverageApi.getFileDetail(id!, filePath);
 
