@@ -508,6 +508,12 @@ router.post('/', binaryUpload.fields([{ name: 'binary', maxCount: 1 }, { name: '
       });
     }
 
+    // 同一个 (projectId, buildKey) 可能被并发的 CI 任务同时打到这个接口（比如重试、或两条
+    // 流水线同时给同一个 commit 建 Build）——查找已有 Build → 清目录 → 解压 → 创建/更新记录
+    // 这一整套操作不是原子的，不加锁的话两个并发请求会互相踩对方的目录、甚至各自都判断"没有
+    // 已有 Build"从而各建一条，产生两个 buildId 对应同一个 buildKey。用跟 raw-coverage 合并
+    // 同一套 withBuildLock，按 (projectId, buildKey) 序列化整段逻辑
+    await withBuildLock(`build-create:${projectId}:${buildKey}`, async () => {
     // 同一个构建身份可能被 CI 重复构建多次（比如重新打包、换签名，或组件化项目组件升级），
     // 按 (projectId, buildKey) 复用已有 Build，而不是每次都新建一条、产生新的 buildId——
     // 这样 App 侧只要知道 buildKey（编译时打包进 bundle，不需要手动维护 buildId）就能找到正确的 Build。
@@ -719,6 +725,7 @@ router.post('/', binaryUpload.fields([{ name: 'binary', maxCount: 1 }, { name: '
     }
 
     res.status(201).json({ success: true, data: build });
+    });
 
   } catch (error) {
     cleanupTempUploads();
@@ -797,6 +804,15 @@ router.post('/:buildId/raw-coverage', rawUpload.single('file'), async (req: Requ
         // 标记为合并中，让客户端感知进度
         await mongoDb.updateBuild(buildId, { status: 'processing' } as any);
 
+        // 锁外读到的 build 可能已经过期——如果两次上传几乎同时到达，两边在锁外读到的
+        // mergedReportId 可能都是 undefined，先进锁的那次建好报告并写回 mergedReportId 后，
+        // 后进锁的那次如果还在用锁外的旧快照，会判断成"没有报告"又建一份，产生两份报告、
+        // 第一份变成孤儿。进锁之后必须重新读一次最新数据，而不是用外层闭包里的 build
+        const freshBuild = await mongoDb.getBuildById(buildId);
+        if (!freshBuild) {
+          throw new Error('Build not found during merge (deleted concurrently?)');
+        }
+
         // 获取所有原始文件路径
         const allRawUploads = await mongoDb.getRawUploadsByBuild(buildId);
         const rawFilePaths = allRawUploads
@@ -808,15 +824,15 @@ router.post('/:buildId/raw-coverage', rawUpload.single('file'), async (req: Requ
         }
 
         // 执行转换 + 解析（单仓库 / 多模块都走这一个函数，多模块时已经聚合好整体数字）
-        const merged = await mergeAndComputeCoverage(build, buildDir, rawFilePaths);
+        const merged = await mergeAndComputeCoverage(freshBuild, buildDir, rawFilePaths);
         const reportPath = merged.reportPath;
         const coverageData = merged;
 
         // 创建或更新 CoverageReport
-        if (build.mergedReportId) {
+        if (freshBuild.mergedReportId) {
           // 更新已有报告
-          await mongoDb.deleteFileCoveragesByReport(build.mergedReportId);
-          await mongoDb.updateReport(build.mergedReportId, {
+          await mongoDb.deleteFileCoveragesByReport(freshBuild.mergedReportId);
+          await mongoDb.updateReport(freshBuild.mergedReportId, {
             lineCoverage: merged.lineCoverage,
             functionCoverage: merged.functionCoverage,
             branchCoverage: merged.branchCoverage,
@@ -828,7 +844,7 @@ router.post('/:buildId/raw-coverage', rawUpload.single('file'), async (req: Requ
           // 重新添加文件覆盖率
           for (const file of merged.files) {
             await mongoDb.addFileCoverage({
-              reportId: build.mergedReportId,
+              reportId: freshBuild.mergedReportId,
               filePath: file.filePath,
               lineCoverage: file.lineCoverage,
               totalLines: file.totalLines,
@@ -841,17 +857,17 @@ router.post('/:buildId/raw-coverage', rawUpload.single('file'), async (req: Requ
         } else {
           // 创建新报告
           const report = await mongoDb.createReport({
-            projectId: build.projectId,
-            commitHash: build.commitHash,
-            branch: build.branch,
+            projectId: freshBuild.projectId,
+            commitHash: freshBuild.commitHash,
+            branch: freshBuild.branch,
             lineCoverage: merged.lineCoverage,
             functionCoverage: merged.functionCoverage,
             branchCoverage: merged.branchCoverage,
             incrementalCoverage: merged.incrementalCoverage,
             moduleCoverages: merged.moduleCoverages,
-            gitDiff: build.gitDiff,
+            gitDiff: freshBuild.gitDiff,
             reportPath,
-            buildId: build.id,
+            buildId: freshBuild.id,
             source: 'auto'
           });
 
@@ -1051,6 +1067,13 @@ router.post('/:buildId/remerge', async (req: Request, res: Response) => {
 
     await withBuildLock(build.id, async () => {
       try {
+        // 锁外读到的 build 可能已经过期（比如刚好有一次 raw-coverage 上传在锁里建好了报告），
+        // 进锁之后重新读一次最新数据，跟 raw-coverage 合并逻辑保持一致
+        const freshBuild = await mongoDb.getBuildById(build.id);
+        if (!freshBuild) {
+          throw new Error('Build not found during remerge (deleted concurrently?)');
+        }
+
         const rawFilePaths = allRawUploads
           .filter(r => fs.existsSync(r.filePath))
           .map(r => r.filePath);
@@ -1059,14 +1082,14 @@ router.post('/:buildId/remerge', async (req: Request, res: Response) => {
           throw new Error('No valid raw files found on disk');
         }
 
-        const buildDir = path.dirname(path.dirname(build.binaryPath));
+        const buildDir = path.dirname(path.dirname(freshBuild.binaryPath));
         // 合并 + 解析（单仓库 / 多模块都走这一个函数，跟 raw-coverage 上传流程保持一致）
-        const merged = await mergeAndComputeCoverage(build, buildDir, rawFilePaths);
+        const merged = await mergeAndComputeCoverage(freshBuild, buildDir, rawFilePaths);
         const reportPath = merged.reportPath;
 
-        if (build.mergedReportId) {
-          await mongoDb.deleteFileCoveragesByReport(build.mergedReportId);
-          await mongoDb.updateReport(build.mergedReportId, {
+        if (freshBuild.mergedReportId) {
+          await mongoDb.deleteFileCoveragesByReport(freshBuild.mergedReportId);
+          await mongoDb.updateReport(freshBuild.mergedReportId, {
             lineCoverage: merged.lineCoverage,
             functionCoverage: merged.functionCoverage,
             branchCoverage: merged.branchCoverage,
@@ -1077,7 +1100,7 @@ router.post('/:buildId/remerge', async (req: Request, res: Response) => {
 
           for (const file of merged.files) {
             await mongoDb.addFileCoverage({
-              reportId: build.mergedReportId,
+              reportId: freshBuild.mergedReportId,
               filePath: file.filePath,
               lineCoverage: file.lineCoverage,
               totalLines: file.totalLines,
@@ -1085,6 +1108,37 @@ router.post('/:buildId/remerge', async (req: Request, res: Response) => {
               module: file.module
             });
           }
+        } else {
+          // 这个 Build 从来没有成功合并过（第一次合并就失败了），remerge 之前会把合并结果
+          // 直接扔掉、报"完成"但实际什么都没创建——这里补上创建新报告的分支，跟 raw-coverage
+          // 上传流程里"没有 mergedReportId 就创建"的逻辑保持一致
+          const report = await mongoDb.createReport({
+            projectId: freshBuild.projectId,
+            commitHash: freshBuild.commitHash,
+            branch: freshBuild.branch,
+            lineCoverage: merged.lineCoverage,
+            functionCoverage: merged.functionCoverage,
+            branchCoverage: merged.branchCoverage,
+            incrementalCoverage: merged.incrementalCoverage,
+            moduleCoverages: merged.moduleCoverages,
+            gitDiff: freshBuild.gitDiff,
+            reportPath,
+            buildId: freshBuild.id,
+            source: 'auto'
+          });
+
+          for (const file of merged.files) {
+            await mongoDb.addFileCoverage({
+              reportId: report.id,
+              filePath: file.filePath,
+              lineCoverage: file.lineCoverage,
+              totalLines: file.totalLines,
+              coveredLines: file.coveredLines,
+              module: file.module
+            });
+          }
+
+          await mongoDb.updateBuild(build.id, { mergedReportId: report.id } as any);
         }
 
         await mongoDb.updateBuild(build.id, {

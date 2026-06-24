@@ -334,11 +334,19 @@ router.post('/:id/incremental-files', async (req: Request, res: Response) => {
     // 合并结果时打上 module 标签，跟 GET /:id/incremental 的多模块分支保持一致的处理方式
     let files;
     if (report.moduleCoverages && report.moduleCoverages.length > 0) {
+      // 同一份 diff 对每个模块各跑一遍——如果两个模块各自有一个同路径的文件（比如 Android
+      // 多模块下每个模块都会自动生成一份 BuildConfig.java），getIncrementalFiles 按文件名/
+      // 路径做匹配，会在两个模块里都命中同一条 diff，重复计入变更行数。按 filePath 去重，
+      // 只保留第一次命中的（这只是个尽量准的兜底——精确的按模块归属拆分应该用创建 Build 时的
+      // diffs.zip/moduleDiffs 机制，这里贴单份 diff 本身就是近似工具）
+      const seenFilePaths = new Set<string>();
       files = [];
       for (const m of report.moduleCoverages) {
         if (!m.reportPath) continue;
         const moduleFiles = await getIncrementalFiles(m.reportPath, diffContent);
         for (const f of moduleFiles) {
+          if (seenFilePaths.has(f.filePath)) continue;
+          seenFilePaths.add(f.filePath);
           files.push({ ...f, module: m.module });
         }
       }
@@ -352,15 +360,23 @@ router.post('/:id/incremental-files', async (req: Request, res: Response) => {
       files = await getIncrementalFiles(report.reportPath, diffContent);
     }
 
+    // 按变更行数加权平均，跟 GET /:id/incremental、computeWeightedIncremental 保持一致——
+    // 之前这里是按文件数量直接平均，一个全覆盖的小文件和一个大量未覆盖的大文件权重相同，
+    // 跟报告里实际存的、其它接口算出来的数字不是一个口径
+    const totalChangedLines = files.reduce((sum, f) => sum + f.changedLines.length, 0);
+    const averageIncrementalCoverage = totalChangedLines > 0
+      ? parseFloat(
+          (files.reduce((sum, f) => sum + f.incrementalCoverage * f.changedLines.length, 0) / totalChangedLines).toFixed(2)
+        )
+      : 0;
+
     res.json({
       success: true,
       data: files,
       summary: {
         totalFiles: files.length,
-        totalChangedLines: files.reduce((sum, f) => sum + f.changedLines.length, 0),
-        averageIncrementalCoverage: files.length > 0
-          ? parseFloat((files.reduce((sum, f) => sum + f.incrementalCoverage, 0) / files.length).toFixed(2))
-          : 0
+        totalChangedLines,
+        averageIncrementalCoverage
       }
     });
   } catch (error) {

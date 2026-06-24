@@ -207,8 +207,11 @@ const BuildSchema = new Schema<IBuild>({
 BuildSchema.index({ projectId: 1, createdAt: -1 });
 // 同一个 commit/构建身份可能被 CI 重复构建多次（同一份代码，不同打包批次，或组件化项目
 // 用复合指纹当身份），按 (projectId, buildKey) 查找已有 Build 用于复用/覆盖，而不是每次新建一条。
-// 非组件化项目 buildKey 默认等于 commitHash，效果跟原来按 commitHash 查找完全一样
-BuildSchema.index({ projectId: 1, buildKey: 1 });
+// 非组件化项目 buildKey 默认等于 commitHash，效果跟原来按 commitHash 查找完全一样。
+// unique: true——光在应用层"先查后写"防不住两个并发请求同时建 Build（POST /api/builds 那边
+// 已经用 withBuildLock 按这个组合键加锁了，这里是数据库层的最后一道保险：锁要是哪天被绕过/
+// 漏加，唯一索引会让第二次插入直接报错，而不是悄悄插出两条对应同一个构建身份的 Build）
+BuildSchema.index({ projectId: 1, buildKey: 1 }, { unique: true });
 
 // 原始覆盖率上传模型
 const RawUploadSchema = new Schema<IRawUpload>({

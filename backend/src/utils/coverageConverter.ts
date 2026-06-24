@@ -2,8 +2,9 @@ import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
-// Per-build 内存锁，避免同一 Build 的并发合并
-const buildLocks = new Map<string, Promise<void>>();
+// 内存锁，按任意字符串 key 序列化执行——用于同一 Build 的并发合并（key=buildId），
+// 也用于同一 (projectId, buildKey) 的并发创建/复用（key="build-create:projectId:buildKey"）
+const buildLocks = new Map<string, Promise<unknown>>();
 
 // 优先使用 JAVA_HOME 中的 java，保证 macOS 环境下能找到 JDK
 function getJavaBin(): string {
@@ -42,10 +43,10 @@ function findLLVMTool(toolName: 'llvm-profdata' | 'llvm-cov'): string {
   return toolName; // 兜底：依赖 PATH（如果装的是无版本号后缀的 llvm-profdata/llvm-cov）
 }
 
-export async function withBuildLock(buildId: string, fn: () => Promise<void>): Promise<void> {
-  const prev = buildLocks.get(buildId) || Promise.resolve();
+export async function withBuildLock(key: string, fn: () => Promise<unknown>): Promise<void> {
+  const prev = buildLocks.get(key) || Promise.resolve();
   const current = prev.then(fn, fn);
-  buildLocks.set(buildId, current);
+  buildLocks.set(key, current);
   await current;
 }
 
