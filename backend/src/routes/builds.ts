@@ -524,10 +524,15 @@ router.post('/', binaryUpload.fields([{ name: 'binary', maxCount: 1 }, { name: '
     const mergedDir = path.join(buildDir, 'merged');
 
     if (existingBuild) {
-      // 复用已有 Build：旧的二进制、原始上传、合并结果都对应不上新二进制了，全部清空重来
+      // 复用已有 Build：旧的二进制、原始上传、合并结果都对应不上新二进制了，全部清空重来。
+      // classfiles/diffs 也要清掉——不然 unzip -o 只会覆盖同名文件，新构建模块结构跟旧的不一样
+      // （比如某个模块被移除了，或者从单仓库改成了多模块）时，旧目录里残留的文件会跟新解压出来
+      // 的混在一起，平台分不清哪些是这次真实有效的
       fs.rmSync(binaryDir, { recursive: true, force: true });
       fs.rmSync(rawDir, { recursive: true, force: true });
       fs.rmSync(mergedDir, { recursive: true, force: true });
+      fs.rmSync(path.join(buildDir, 'classfiles'), { recursive: true, force: true });
+      fs.rmSync(path.join(buildDir, 'diffs'), { recursive: true, force: true });
       if (existingBuild.mergedReportId) {
         await mongoDb.deleteFileCoveragesByReport(existingBuild.mergedReportId);
         await mongoDb.deleteReport(existingBuild.mergedReportId);

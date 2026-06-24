@@ -328,14 +328,30 @@ router.post('/:id/incremental-files', async (req: Request, res: Response) => {
       });
     }
 
-    if (!report.reportPath) {
-      return res.status(404).json({
-        success: false,
-        message: 'Report file not found'
-      });
+    // 多模块组件化报告：report.reportPath 只是第一个模块的报告，贴的这一份 diff 可能
+    // 跨多个模块的文件——对每个模块自己的 reportPath 都跑一遍 getIncrementalFiles，
+    // 文件路径不属于这个模块的天然匹配不上（getIncrementalFiles 内部按文件名做匹配），
+    // 合并结果时打上 module 标签，跟 GET /:id/incremental 的多模块分支保持一致的处理方式
+    let files;
+    if (report.moduleCoverages && report.moduleCoverages.length > 0) {
+      files = [];
+      for (const m of report.moduleCoverages) {
+        if (!m.reportPath) continue;
+        const moduleFiles = await getIncrementalFiles(m.reportPath, diffContent);
+        for (const f of moduleFiles) {
+          files.push({ ...f, module: m.module });
+        }
+      }
+    } else {
+      if (!report.reportPath) {
+        return res.status(404).json({
+          success: false,
+          message: 'Report file not found'
+        });
+      }
+      files = await getIncrementalFiles(report.reportPath, diffContent);
     }
 
-    const files = await getIncrementalFiles(report.reportPath, diffContent);
     res.json({
       success: true,
       data: files,
