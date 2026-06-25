@@ -102,8 +102,6 @@ async function parseJaCoCoXML(filePath: string): Promise<CoverageData> {
   }
 
   // 计算总体覆盖率
-  let totalInstructions = 0;
-  let coveredInstructions = 0;
   let totalBranches = 0;
   let coveredBranches = 0;
   let totalMethods = 0;
@@ -166,31 +164,32 @@ async function parseJaCoCoXML(filePath: string): Promise<CoverageData> {
     }
   }
 
-  // 从 counter 获取总体数据
+  // 从 counter 获取分支总体数据（BRANCH 计数器是真的按分支算的，没有单位混用问题）
   const counters = report.counter || [];
   for (const counter of counters) {
     const type = counter.$.type;
     const missed = parseInt(counter.$.missed);
     const covered = parseInt(counter.$.covered);
-    
-    switch (type) {
-      case 'INSTRUCTION':
-        totalInstructions = missed + covered;
-        coveredInstructions = covered;
-        break;
-      case 'BRANCH':
-        totalBranches = missed + covered;
-        coveredBranches = covered;
-        break;
+
+    if (type === 'BRANCH') {
+      totalBranches = missed + covered;
+      coveredBranches = covered;
     }
   }
 
-  const lineCoverage = totalInstructions > 0 
-    ? (coveredInstructions / totalInstructions) * 100 
+  // lineCoverage 必须是真的"行覆盖率"，不能从根节点的 INSTRUCTION 计数器算（那是指令覆盖率，
+  // 单位不一样——一行代码可能编译成好几条字节码指令，"这一行算覆盖"只要有一条指令执行过就算，
+  // 跟"这一行的指令全部执行过的比例"是两个不同的数字，之前这里图省事直接拿 INSTRUCTION
+  // 计数器当 lineCoverage 用，名字和算法对不上）。改成把上面每个文件已经按真实 <line>
+  // 元素算出来的 totalLines/coveredLines 累加起来，跟文件级数字、逐行高亮用的是同一套口径
+  const totalLines = files.reduce((sum, f) => sum + f.totalLines, 0);
+  const coveredLines = files.reduce((sum, f) => sum + f.coveredLines, 0);
+  const lineCoverage = totalLines > 0
+    ? (coveredLines / totalLines) * 100
     : 0;
-  
-  const branchCoverage = totalBranches > 0 
-    ? (coveredBranches / totalBranches) * 100 
+
+  const branchCoverage = totalBranches > 0
+    ? (coveredBranches / totalBranches) * 100
     : 0;
   
   const functionCoverage = totalMethods > 0 
