@@ -341,6 +341,7 @@ export class MongoDatabase {
       branch: doc.branch,
       buildVersion: doc.buildVersion,
       gitDiff: doc.gitDiff,
+      gitDiffPath: doc.gitDiffPath,
       componentRepos: doc.componentRepos,
       moduleDiffs: doc.moduleDiffs,
       buildFingerprint: doc.buildFingerprint,

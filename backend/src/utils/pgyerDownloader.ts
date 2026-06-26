@@ -2,8 +2,9 @@ import https from 'https';
 import http from 'http';
 import fs from 'fs';
 import path from 'path';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { parseStringPromise } from 'xml2js';
+import { sanitizeFilename } from './fsUtils';
 
 const IOS_USER_AGENT = 'com.apple.appstored/1.0 iOS/18.0 model/iPhone15,2 hwp/t8120 build/23D127 (6; dt:282) AMS/1';
 
@@ -126,9 +127,9 @@ export async function downloadIPA(
  * IPA 结构: Payload/AppName.app/AppName (Mach-O)
  */
 export async function extractBinaryFromIPA(ipaPath: string, extractDir: string): Promise<string> {
-  // 解压 IPA
+  // 解压 IPA。execFileSync 走参数数组形式，路径不进 shell，避免不可信文件名/目录名注入
   fs.mkdirSync(extractDir, { recursive: true });
-  execSync(`unzip -o "${ipaPath}" -d "${extractDir}"`, { timeout: 120000, stdio: 'pipe' });
+  execFileSync('unzip', ['-o', ipaPath, '-d', extractDir], { timeout: 120000, stdio: 'pipe' });
 
   // 找到 .app 目录
   const payloadDir = path.join(extractDir, 'Payload');
@@ -148,8 +149,9 @@ export async function extractBinaryFromIPA(ipaPath: string, extractDir: string):
   let executableName: string;
 
   try {
-    // 使用 plutil 将 Info.plist 转换为 JSON
-    const jsonStr = execSync(`plutil -convert json -o - "${infoPlistPath}"`, {
+    // 使用 plutil 将 Info.plist 转换为 JSON（infoPlistPath 含来自 IPA 的 .app 目录名，
+    // 用 execFileSync 避免目录名里的 shell 元字符注入）
+    const jsonStr = execFileSync('plutil', ['-convert', 'json', '-o', '-', infoPlistPath], {
       timeout: 10000,
       encoding: 'utf-8'
     });
@@ -326,12 +328,13 @@ function extractFilenameFromUrl(downloadUrl: string): string {
     if (disposition) {
       const decoded = decodeURIComponent(disposition);
       const match = decoded.match(/filename="(.+?)"/);
-      if (match) return match[1];
+      // 文件名来自远端响应头（不可信），会被拼成磁盘路径并最终进解压流程，净化后再返回
+      if (match) return sanitizeFilename(match[1]);
     }
     // fallback: 从路径提取
     const pathParts = url.pathname.split('/');
     const last = pathParts[pathParts.length - 1];
-    if (last.endsWith('.ipa')) return last;
+    if (last.endsWith('.ipa')) return sanitizeFilename(last);
     return 'app.ipa';
   } catch {
     return 'app.ipa';

@@ -143,9 +143,13 @@ router.post('/coverage', upload.single('file'), async (req: Request, res: Respon
     if (req.body.gitDiff && permanentPath) {
       try {
         const incrementalFiles = await getIncrementalFiles(permanentPath, req.body.gitDiff);
-        if (incrementalFiles.length > 0) {
+        const totalChangedLines = incrementalFiles.reduce((sum, f) => sum + f.changedLines.length, 0);
+        if (totalChangedLines > 0) {
+          // 按变更行数加权平均，跟 coverage.ts、builds.ts computeWeightedIncremental 同口径——
+          // 之前这里按文件数量直接平均（小文件高覆盖率会被等权拉高），跟 /incremental 接口
+          // 返回的数字方法学不一致，存进库的增量覆盖率会跟其它接口对不上
           computedIncrementalCoverage = parseFloat(
-            (incrementalFiles.reduce((sum, f) => sum + (f.incrementalCoverage || 0), 0) / incrementalFiles.length).toFixed(2)
+            (incrementalFiles.reduce((sum, f) => sum + (f.incrementalCoverage || 0) * f.changedLines.length, 0) / totalChangedLines).toFixed(2)
           );
           // 更新报告的增量覆盖率
           await mongoDb.updateReport(report.id, { incrementalCoverage: computedIncrementalCoverage });

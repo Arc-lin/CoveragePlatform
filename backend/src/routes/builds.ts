@@ -7,7 +7,8 @@ import { mongoDb } from '../models/database';
 import { mergeIOSCoverage, mergeAndroidCoverage, withBuildLock, checkToolAvailability } from '../utils/coverageConverter';
 import { parseIOSCoverage, parseAndroidCoverage, getIncrementalFiles } from '../utils/coverageParser';
 import { extractPgyerKey, getIPADownloadUrl, downloadIPA, extractBinaryFromIPA, extractFrameworkBinaries } from '../utils/pgyerDownloader';
-import { moveFile } from '../utils/fsUtils';
+import { moveFile, sanitizeFilename } from '../utils/fsUtils';
+import { execFileSync } from 'child_process';
 import { Build } from '../types';
 
 const router = Router();
@@ -31,6 +32,7 @@ interface MergedModuleCoverage {
   totalLines: number;
   coveredLines: number;
   reportPath?: string;
+  gitDiff?: string;
 }
 
 interface MergedCoverageResult {
@@ -41,17 +43,36 @@ interface MergedCoverageResult {
   files: MergedFileCoverage[];
   moduleCoverages?: MergedModuleCoverage[];
   reportPath: string;
+  // 单仓库报告的 diff 原文快照，写进 report.gitDiff——让报告自包含（增量明细接口直接读
+  // report.gitDiff，不依赖 Build.gitDiffPath 落盘文件还在）。多仓库走 moduleCoverages[].gitDiff，
+  // 这里为 undefined
+  gitDiff?: string;
 }
 
-// 按变更行数加权平均，跟现有单仓库逻辑保持一致的近似方式（也用在多模块场景里按模块加权聚合）
-async function computeWeightedIncremental(reportPath: string, diff: string): Promise<number | undefined> {
+// 单仓库项目的 diff 原文：优先读 gitDiffPath 落盘文件（diffs.zip 上传的新方式），没有再回退到
+// 内联 gitDiff 字段（from-pgyer，以及本次改动前的旧 Build 记录）。两者都没有就返回 undefined
+function resolveSingleRepoDiff(build: Build): string | undefined {
+  if (build.gitDiffPath && fs.existsSync(build.gitDiffPath)) {
+    return fs.readFileSync(build.gitDiffPath, 'utf-8');
+  }
+  return build.gitDiff;
+}
+
+// 按变更行数加权平均，跟现有单仓库逻辑保持一致的近似方式（也用在多模块场景里按模块加权聚合）。
+// 一次 getIncrementalFiles 同时返回加权增量值和总变更行数——多模块聚合两个数都要用，避免
+// 之前"先算 incremental、再单独跑一遍 getIncrementalFiles 取 totalChanged"的重复解析
+async function computeWeightedIncremental(
+  reportPath: string,
+  diff: string
+): Promise<{ incremental: number | undefined; totalChanged: number }> {
   const incrementalFiles = await getIncrementalFiles(reportPath, diff);
-  if (incrementalFiles.length === 0) return undefined;
+  if (incrementalFiles.length === 0) return { incremental: undefined, totalChanged: 0 };
   const totalChanged = incrementalFiles.reduce((s, f) => s + f.changedLines.length, 0);
-  if (totalChanged === 0) return 0;
-  return parseFloat(
+  if (totalChanged === 0) return { incremental: 0, totalChanged: 0 };
+  const incremental = parseFloat(
     (incrementalFiles.reduce((s, f) => s + (f.incrementalCoverage || 0) * f.changedLines.length, 0) / totalChanged).toFixed(2)
   );
+  return { incremental, totalChanged };
 }
 
 // 合并 + 解析，统一处理单仓库（iOS / 老 Android）和多模块 Android 两种情况——
@@ -61,31 +82,35 @@ async function mergeAndComputeCoverage(build: Build, buildDir: string, rawFilePa
   if (build.platform === 'ios') {
     const reportPath = await mergeIOSCoverage(buildDir, [build.binaryPath, ...(build.frameworkBinaryPaths || [])], rawFilePaths);
     const data = await parseIOSCoverage(reportPath, path.extname(reportPath).toLowerCase());
-    const incrementalCoverage = build.gitDiff ? await computeWeightedIncremental(reportPath, build.gitDiff) : undefined;
+    const diff = resolveSingleRepoDiff(build);
+    const incrementalCoverage = diff ? (await computeWeightedIncremental(reportPath, diff)).incremental : undefined;
     return {
       lineCoverage: data.lineCoverage,
       functionCoverage: data.functionCoverage,
       branchCoverage: data.branchCoverage,
       incrementalCoverage,
       files: data.files || [],
-      reportPath
+      reportPath,
+      gitDiff: diff
     };
   }
 
   const androidResult = await mergeAndroidCoverage(buildDir, build.binaryPath, rawFilePaths);
 
   if (!androidResult.modules) {
-    // 单仓库项目：老行为，零改动
+    // 单仓库项目：diff 从 gitDiffPath 落盘文件读（回退内联 gitDiff），形状保持扁平
     const reportPath = androidResult.reportPath;
     const data = await parseAndroidCoverage(reportPath, '.xml');
-    const incrementalCoverage = build.gitDiff ? await computeWeightedIncremental(reportPath, build.gitDiff) : undefined;
+    const diff = resolveSingleRepoDiff(build);
+    const incrementalCoverage = diff ? (await computeWeightedIncremental(reportPath, diff)).incremental : undefined;
     return {
       lineCoverage: data.lineCoverage,
       functionCoverage: data.functionCoverage,
       branchCoverage: data.branchCoverage,
       incrementalCoverage,
       files: data.files || [],
-      reportPath
+      reportPath,
+      gitDiff: diff
     };
   }
 
@@ -97,6 +122,19 @@ async function mergeAndComputeCoverage(build: Build, buildDir: string, rawFilePa
       .filter(d => fs.existsSync(d.diffPath))
       .map(d => [d.module, fs.readFileSync(d.diffPath, 'utf-8')])
   );
+
+  // diffs.zip 里列了、但 classfiles 报告里没有对应模块的 module 名（两份 manifest.json 没对齐，
+  // 或者打错字）会让这个模块的 diff 静默丢失——这里显式告警，帮 CI 早发现，而不是默默没有增量数字
+  const reportModuleNames = new Set(androidResult.modules.map(m => m.module));
+  for (const d of (build.moduleDiffs || [])) {
+    if (!reportModuleNames.has(d.module)) {
+      console.warn(
+        `[coverage] diffs.zip 里的模块 "${d.module}" 在 classfiles manifest 中找不到对应模块，` +
+        `该模块的增量覆盖率会被忽略。请检查 classfiles.zip 与 diffs.zip 两份 manifest.json 的 module 名是否一致。`
+      );
+    }
+  }
+
   const files: MergedFileCoverage[] = [];
   const moduleCoverages: MergedModuleCoverage[] = [];
   let totalLines = 0, weightedLine = 0, weightedFn = 0, weightedBranch = 0;
@@ -115,12 +153,11 @@ async function mergeAndComputeCoverage(build: Build, buildDir: string, rawFilePa
     let moduleIncremental: number | undefined;
     const moduleDiff = moduleDiffMap.get(m.module);
     if (moduleDiff) {
-      moduleIncremental = await computeWeightedIncremental(m.xmlPath, moduleDiff);
-      if (moduleIncremental !== undefined) {
-        const incrementalFiles = await getIncrementalFiles(m.xmlPath, moduleDiff);
-        const changed = incrementalFiles.reduce((s, f) => s + f.changedLines.length, 0);
+      const { incremental, totalChanged: changed } = await computeWeightedIncremental(m.xmlPath, moduleDiff);
+      moduleIncremental = incremental;
+      if (incremental !== undefined && changed > 0) {
         totalChanged += changed;
-        weightedChangedCovered += moduleIncremental * changed;
+        weightedChangedCovered += incremental * changed;
       }
     }
 
@@ -134,7 +171,10 @@ async function mergeAndComputeCoverage(build: Build, buildDir: string, rawFilePa
       incrementalCoverage: moduleIncremental,
       totalLines: moduleTotalLines,
       coveredLines: moduleCoveredLines,
-      reportPath: m.xmlPath
+      reportPath: m.xmlPath,
+      // 把这个模块的 diff 原文快照进报告，让多仓库报告自包含（增量明细接口优先用它，
+      // 不再依赖 Build.moduleDiffs 和磁盘 diff 文件还在）。没有 diff 的模块不写这个字段
+      gitDiff: moduleDiff
     });
 
     totalLines += moduleTotalLines;
@@ -323,36 +363,94 @@ router.post('/from-pgyer', async (req: Request, res: Response) => {
         // 清理解压目录
         fs.rmSync(ipaExtractDir, { recursive: true, force: true });
 
-        // 5. 创建 Build 记录
-        const build = await mongoDb.createBuild({
-          projectId,
-          platform: 'ios',
-          commitHash,
-          buildKey: commitHash,
-          branch,
-          buildVersion,
-          gitDiff,
-          binaryPath: permanentBinaryPath,
-          frameworkBinaryPaths,
-          status: 'ready'
-        });
+        // 5. 创建或复用 Build 记录
+        //    pgyer 下载用 commitHash 作为 buildKey。同一个 commit 可能被重复下载（重试、
+        //    或先手动建过 Build），跟 POST /api/builds 一样按 (projectId, buildKey) 复用已有
+        //    Build，而不是无脑 createBuild——否则会撞 (projectId, buildKey) 唯一索引，第二次
+        //    下载直接抛 duplicate key、被外层 catch 成 status:'error'，而不是覆盖更新。
+        //    整段创建/复用走 build-create 锁，跟 POST /api/builds 用同一把锁互斥
+        let build!: Build;
+        await withBuildLock(`build-create:${projectId}:${commitHash}`, async () => {
+          const existingBuild = await mongoDb.getBuildByProjectAndKey(projectId, commitHash);
 
-        // 重命名目录以使用真实的 MongoDB _id
-        const realBuildDir = path.join(__dirname, '../../builds', projectId, build.id);
-        if (buildDir !== realBuildDir) {
-          fs.renameSync(buildDir, realBuildDir);
-          const realBinaryPath = path.join(realBuildDir, 'binary', binaryName);
-          const updates: Partial<Build> = { binaryPath: realBinaryPath };
-          build.binaryPath = realBinaryPath;
-          if (frameworkBinaryPaths) {
-            const realFrameworkBinaryPaths = frameworkBinaryPaths.map((fbPath) =>
-              fbPath.replace(buildDir, realBuildDir)
-            );
-            updates.frameworkBinaryPaths = realFrameworkBinaryPaths;
-            build.frameworkBinaryPaths = realFrameworkBinaryPaths;
+          const finalize = async () => {
+            if (existingBuild) {
+              // 复用已有 Build：旧二进制/原始上传/合并结果都对应不上新下载的二进制了，全部清空。
+              // 旧产物在 realBuildDir，先删旧目录和旧报告，再把这次下载好的临时 buildDir 搬过去
+              const realBuildDir = path.join(__dirname, '../../builds', projectId, existingBuild.id);
+              if (existingBuild.mergedReportId) {
+                await mongoDb.deleteFileCoveragesByReport(existingBuild.mergedReportId);
+                await mongoDb.deleteReport(existingBuild.mergedReportId);
+              }
+              if (fs.existsSync(realBuildDir)) {
+                fs.rmSync(realBuildDir, { recursive: true, force: true });
+              }
+              fs.renameSync(buildDir, realBuildDir);
+
+              const realBinaryPath = path.join(realBuildDir, 'binary', binaryName);
+              const realFrameworkBinaryPaths = frameworkBinaryPaths
+                ? frameworkBinaryPaths.map((fbPath) => fbPath.replace(buildDir, realBuildDir))
+                : undefined;
+
+              const updated = await mongoDb.updateBuild(existingBuild.id, {
+                commitHash,
+                branch,
+                buildVersion,
+                gitDiff,
+                binaryPath: realBinaryPath,
+                frameworkBinaryPaths: realFrameworkBinaryPaths,
+                status: 'ready',
+                rawUploadCount: 0,
+                mergedReportId: undefined,
+                lastMergedAt: undefined,
+                errorMessage: undefined
+              } as Partial<Build>);
+              if (!updated) {
+                throw new Error('Failed to update existing build');
+              }
+              build = updated;
+            } else {
+              const created = await mongoDb.createBuild({
+                projectId,
+                platform: 'ios',
+                commitHash,
+                buildKey: commitHash,
+                branch,
+                buildVersion,
+                gitDiff,
+                binaryPath: permanentBinaryPath,
+                frameworkBinaryPaths,
+                status: 'ready'
+              });
+
+              // 重命名临时目录以使用真实的 MongoDB _id
+              const realBuildDir = path.join(__dirname, '../../builds', projectId, created.id);
+              if (buildDir !== realBuildDir) {
+                fs.renameSync(buildDir, realBuildDir);
+                const realBinaryPath = path.join(realBuildDir, 'binary', binaryName);
+                const updates: Partial<Build> = { binaryPath: realBinaryPath };
+                created.binaryPath = realBinaryPath;
+                if (frameworkBinaryPaths) {
+                  const realFrameworkBinaryPaths = frameworkBinaryPaths.map((fbPath) =>
+                    fbPath.replace(buildDir, realBuildDir)
+                  );
+                  updates.frameworkBinaryPaths = realFrameworkBinaryPaths;
+                  created.frameworkBinaryPaths = realFrameworkBinaryPaths;
+                }
+                await mongoDb.updateBuild(created.id, updates);
+              }
+              build = created;
+            }
+          };
+
+          // 复用已有 Build 时，"清旧目录搬新目录"还要跟这个 buildId 正在进行中的合并
+          // （raw-coverage/remerge 用的锁）互斥，跟 POST /api/builds 复用分支同一套处理
+          if (existingBuild) {
+            await withBuildLock(existingBuild.id, finalize);
+          } else {
+            await finalize();
           }
-          await mongoDb.updateBuild(build.id, updates);
-        }
+        });
 
         pgyerTasks.set(taskId, { status: 'complete', build, filename });
 
@@ -435,7 +533,9 @@ router.post('/', binaryUpload.fields([{ name: 'binary', maxCount: 1 }, { name: '
       return res.status(400).json({ success: false, message: 'No binary file uploaded' });
     }
 
-    const { projectId, commitHash, branch, buildVersion, gitDiff } = req.body;
+    // 注：git diff 不再从内联表单字段收，统一走 diffs.zip 文件上传（见下面 moduleDiffs/
+    // gitDiffPath 的解析），规避 multer 表单字段大小上限
+    const { projectId, commitHash, branch, buildVersion } = req.body;
     // buildKey 是组件化项目用的"构建身份"（壳工程 commit + 所有组件 commit 的复合指纹），
     // 不传就默认等于 commitHash——非组件化项目完全不受影响，行为跟之前一样
     const buildKey: string = req.body.buildKey || commitHash;
@@ -556,17 +656,19 @@ router.post('/', binaryUpload.fields([{ name: 'binary', maxCount: 1 }, { name: '
     fs.mkdirSync(rawDir, { recursive: true });
     fs.mkdirSync(mergedDir, { recursive: true });
 
-    // 移动 binary 到永久位置
-    let permanentBinaryPath = path.join(binaryDir, binaryFile.originalname);
+    // 移动 binary 到永久位置。文件名走 sanitizeFilename：originalname 是不可信的上传字段，
+    // 既会被 path.join 拼成磁盘路径（防穿越），又会拼进下面的 unzip / 后续 jacoco·llvm 命令
+    // （防注入）。后缀判断用净化后的名字，'.'/'-' 在白名单内不受影响
+    const safeBinaryName = sanitizeFilename(binaryFile.originalname);
+    let permanentBinaryPath = path.join(binaryDir, safeBinaryName);
     moveFile(binaryFile.path, permanentBinaryPath);
 
     // Android: 自动解压 classfiles.zip
-    if (project.platform === 'android' && binaryFile.originalname.endsWith('.zip')) {
+    if (project.platform === 'android' && safeBinaryName.endsWith('.zip')) {
       const classfilesDir = path.join(buildDir, 'classfiles');
       fs.mkdirSync(classfilesDir, { recursive: true });
       try {
-        const { execSync } = require('child_process');
-        execSync(`unzip -o "${permanentBinaryPath}" -d "${classfilesDir}"`, { timeout: 60000, stdio: 'pipe' });
+        execFileSync('unzip', ['-o', permanentBinaryPath, '-d', classfilesDir], { timeout: 60000, stdio: 'pipe' });
       } catch (e) {
         // 解压失败，清理
         if (diffsFile && fs.existsSync(diffsFile.path)) fs.unlinkSync(diffsFile.path);
@@ -579,35 +681,54 @@ router.post('/', binaryUpload.fields([{ name: 'binary', maxCount: 1 }, { name: '
       }
     }
 
-    // 多仓库组件化项目（目前只有 Android Gradle 多模块 + Maven AAR 用）：按模块拆分的 git diff，
-    // 通过 diffs.zip 文件上传（不是内联 JSON 字符串——diff 原文可能很大，跟 binary/classfiles
-    // 一样"传文件落盘、数据库只记路径"，不占用表单字段大小/MongoDB 文档大小的限制）。
-    // zip 内容：manifest.json（[{module, diffFile}]） + 每个模块各自的 diff 文本文件，
-    // module 名跟 classfiles.zip 里 manifest.json 列出的 module 一一对应
+    // git diff 统一走 diffs.zip 文件上传（不是内联字符串——diff 原文可能很大，跟
+    // binary/classfiles 一样"传文件落盘、数据库只记路径"，不占用表单字段/MongoDB 文档大小限制）。
+    // 单仓库和多仓库共用同一个 diffs 文件字段 + manifest.json，按 manifest 形状区分：
+    //   单仓库：{ "gitDiff": "diff.txt" }                          → gitDiffPath
+    //   多仓库：{ "entries": [{ "module", "diffFile" }] }          → moduleDiffs
+    // 解压后所有 diff 文件路径都必须落在 diffsDir 内（防 `../../` 穿越读任意文件）
     let moduleDiffs: { module: string; diffPath: string }[] | undefined;
+    let gitDiffPath: string | undefined;
     if (diffsFile) {
       const diffsDir = path.join(buildDir, 'diffs');
       fs.mkdirSync(diffsDir, { recursive: true });
+
+      // diffs.zip 里的相对路径不可信，统一解析 + 校验落在 diffsDir 内 + 存在
+      const resolveInside = (relFile: string): string => {
+        const p = path.join(diffsDir, relFile);
+        const rel = path.relative(diffsDir, p);
+        if (rel.startsWith('..') || path.isAbsolute(rel)) {
+          throw new Error(`diffs.zip manifest.json references path outside archive: ${relFile}`);
+        }
+        if (!fs.existsSync(p)) {
+          throw new Error(`diffs.zip manifest.json references missing file: ${relFile}`);
+        }
+        return p;
+      };
+
       try {
-        const { execSync } = require('child_process');
-        execSync(`unzip -o "${diffsFile.path}" -d "${diffsDir}"`, { timeout: 60000, stdio: 'pipe' });
+        execFileSync('unzip', ['-o', diffsFile.path, '-d', diffsDir], { timeout: 60000, stdio: 'pipe' });
         fs.unlinkSync(diffsFile.path);
 
         const manifestPath = path.join(diffsDir, 'manifest.json');
         if (!fs.existsSync(manifestPath)) {
           throw new Error('diffs.zip is missing manifest.json');
         }
-        const manifest: { entries: { module: string; diffFile: string }[] } = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
-        if (!Array.isArray(manifest.entries)) {
-          throw new Error('diffs.zip manifest.json has no entries array');
+        const manifest: { entries?: { module: string; diffFile: string }[]; gitDiff?: string } =
+          JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
+
+        if (Array.isArray(manifest.entries)) {
+          // 多仓库：按模块拆分，module 名跟 classfiles.zip 的 manifest.json 一一对应
+          moduleDiffs = manifest.entries.map((entry) => ({
+            module: entry.module,
+            diffPath: resolveInside(entry.diffFile)
+          }));
+        } else if (typeof manifest.gitDiff === 'string') {
+          // 单仓库：单份全量 diff，落盘记 gitDiffPath（报告形状保持扁平，不产生 moduleCoverages）
+          gitDiffPath = resolveInside(manifest.gitDiff);
+        } else {
+          throw new Error('diffs.zip manifest.json must have either "entries" (multi-repo) or "gitDiff" (single-repo)');
         }
-        moduleDiffs = manifest.entries.map((entry) => {
-          const diffPath = path.join(diffsDir, entry.diffFile);
-          if (!fs.existsSync(diffPath)) {
-            throw new Error(`diffs.zip manifest.json references missing file: ${entry.diffFile}`);
-          }
-          return { module: entry.module, diffPath };
-        });
       } catch (e) {
         fs.rmSync(buildDir, { recursive: true, force: true });
         return res.status(400).json({
@@ -668,7 +789,9 @@ router.post('/', binaryUpload.fields([{ name: 'binary', maxCount: 1 }, { name: '
         commitHash,
         branch,
         buildVersion,
-        gitDiff,
+        // 复用 Build：清掉旧的内联 gitDiff（老记录可能有），统一用这次落盘的 gitDiffPath
+        gitDiff: undefined,
+        gitDiffPath,
         componentRepos,
         moduleDiffs,
         buildFingerprint,
@@ -692,7 +815,7 @@ router.post('/', binaryUpload.fields([{ name: 'binary', maxCount: 1 }, { name: '
         buildKey,
         branch,
         buildVersion,
-        gitDiff,
+        gitDiffPath,
         componentRepos,
         moduleDiffs,
         buildFingerprint,
@@ -727,6 +850,12 @@ router.post('/', binaryUpload.fields([{ name: 'binary', maxCount: 1 }, { name: '
         }));
         updates.moduleDiffs = realModuleDiffs;
         build.moduleDiffs = realModuleDiffs;
+      }
+
+      if (gitDiffPath) {
+        const realGitDiffPath = gitDiffPath.replace(buildDir, realBuildDir);
+        updates.gitDiffPath = realGitDiffPath;
+        build.gitDiffPath = realGitDiffPath;
       }
 
       await mongoDb.updateBuild(build.id, updates);
@@ -793,7 +922,9 @@ router.post('/:buildId/raw-coverage', rawUpload.single('file'), async (req: Requ
     const buildDir = path.dirname(path.dirname(build.binaryPath)); // builds/{projectId}/{buildId}
     const rawDir = path.join(buildDir, 'raw');
     fs.mkdirSync(rawDir, { recursive: true });
-    const permanentPath = path.join(rawDir, `${uuidv4()}_${req.file.originalname}`);
+    // originalname 不可信：这个路径后面会拼进 jacococli/llvm-profdata merge 的 shell 命令，
+    // 净化掉目录成分和 shell 元字符（前缀 uuid 已保证唯一，净化只为安全不为去重）
+    const permanentPath = path.join(rawDir, `${uuidv4()}_${sanitizeFilename(req.file.originalname)}`);
     moveFile(req.file.path, permanentPath);
 
     // 创建 RawUpload 记录
@@ -880,7 +1011,9 @@ router.post('/:buildId/raw-coverage', rawUpload.single('file'), async (req: Requ
             branchCoverage: merged.branchCoverage,
             incrementalCoverage: merged.incrementalCoverage,
             moduleCoverages: merged.moduleCoverages,
-            gitDiff: freshBuild.gitDiff,
+            // 单仓库：把解析时读到的 diff 原文快照进报告，让报告自包含；多仓库为 undefined
+            // （走 moduleCoverages[].gitDiff）。reportPath 是 merged 落盘的，gitDiff 同源
+            gitDiff: merged.gitDiff,
             reportPath,
             buildId: freshBuild.id,
             source: 'auto'
@@ -1140,7 +1273,9 @@ router.post('/:buildId/remerge', async (req: Request, res: Response) => {
             branchCoverage: merged.branchCoverage,
             incrementalCoverage: merged.incrementalCoverage,
             moduleCoverages: merged.moduleCoverages,
-            gitDiff: freshBuild.gitDiff,
+            // 单仓库：把解析时读到的 diff 原文快照进报告，让报告自包含；多仓库为 undefined
+            // （走 moduleCoverages[].gitDiff）。reportPath 是 merged 落盘的，gitDiff 同源
+            gitDiff: merged.gitDiff,
             reportPath,
             buildId: freshBuild.id,
             source: 'auto'

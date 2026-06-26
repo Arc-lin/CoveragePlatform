@@ -20,28 +20,39 @@ interface IncrementalFileWithModule {
   module: string;
 }
 
-// 多模块组件化报告（report.moduleCoverages 有值）没有单一的 report.gitDiff——diff 是
-// Build.moduleDiffs 按模块拆开存的。这个函数把"按模块算增量文件列表"统一封装一下：
-// 对每个模块，用它自己的 reportPath（moduleCoverages[].reportPath）+ 自己的 diff 文件内容
-// 调 getIncrementalFiles，结果打上 module 标签后拼成一个列表，跟单仓库的返回形状保持一致
+// 多模块组件化报告（report.moduleCoverages 有值）没有单一的 report.gitDiff——diff 是按模块
+// 拆开的。新报告把每个模块的 diff 快照进了 moduleCoverages[].gitDiff（自包含）；这个函数对
+// 每个模块用它自己的 reportPath + diff 调 getIncrementalFiles，结果打上 module 标签后拼成一个
+// 列表，跟单仓库的返回形状保持一致。
+// 老报告（本次改动前生成）moduleCoverages 里没有 gitDiff 快照，回退到从 Build.moduleDiffs 落盘
+// 文件读（懒加载，只有真的命中老报告才去查 Build）
 async function getIncrementalFilesForMultiModuleReport(
   report: CoverageReport
 ): Promise<IncrementalFileWithModule[]> {
-  if (!report.buildId || !report.moduleCoverages) return [];
+  if (!report.moduleCoverages) return [];
 
-  const build = await mongoDb.getBuildById(report.buildId);
-  if (!build?.moduleDiffs) return [];
-
-  const moduleReportPaths = new Map(report.moduleCoverages.map(m => [m.module, m.reportPath]));
+  let buildModuleDiffs: Map<string, string> | undefined;
+  const loadDiffFromBuild = async (moduleName: string): Promise<string | undefined> => {
+    if (!buildModuleDiffs) {
+      buildModuleDiffs = new Map();
+      if (report.buildId) {
+        const build = await mongoDb.getBuildById(report.buildId);
+        for (const d of (build?.moduleDiffs || [])) {
+          if (fs.existsSync(d.diffPath)) buildModuleDiffs.set(d.module, fs.readFileSync(d.diffPath, 'utf-8'));
+        }
+      }
+    }
+    return buildModuleDiffs.get(moduleName);
+  };
 
   const results: IncrementalFileWithModule[] = [];
-  for (const d of build.moduleDiffs) {
-    const moduleReportPath = moduleReportPaths.get(d.module);
-    if (!moduleReportPath || !fs.existsSync(d.diffPath)) continue;
-    const diffContent = fs.readFileSync(d.diffPath, 'utf-8');
-    const moduleFiles = await getIncrementalFiles(moduleReportPath, diffContent);
+  for (const m of report.moduleCoverages) {
+    if (!m.reportPath) continue;
+    const diffContent = m.gitDiff || (await loadDiffFromBuild(m.module));
+    if (!diffContent) continue;
+    const moduleFiles = await getIncrementalFiles(m.reportPath, diffContent);
     for (const f of moduleFiles) {
-      results.push({ ...f, module: d.module });
+      results.push({ ...f, module: m.module });
     }
   }
   return results;
@@ -491,11 +502,16 @@ router.get('/:id/file/incremental', async (req: Request, res: Response) => {
         : undefined;
       targetReportPath = moduleEntry?.reportPath || report.reportPath;
 
-      if (moduleName && report.buildId) {
-        const build = await mongoDb.getBuildById(report.buildId);
-        const moduleDiff = build?.moduleDiffs?.find(d => d.module === moduleName);
-        if (moduleDiff && fs.existsSync(moduleDiff.diffPath)) {
-          diffContent = fs.readFileSync(moduleDiff.diffPath, 'utf-8');
+      if (moduleEntry) {
+        // 优先用报告里内联的 diff 快照（自包含）；老报告没有快照就回退到 Build.moduleDiffs 落盘文件
+        if (moduleEntry.gitDiff) {
+          diffContent = moduleEntry.gitDiff;
+        } else if (moduleName && report.buildId) {
+          const build = await mongoDb.getBuildById(report.buildId);
+          const moduleDiff = build?.moduleDiffs?.find(d => d.module === moduleName);
+          diffContent = moduleDiff && fs.existsSync(moduleDiff.diffPath)
+            ? fs.readFileSync(moduleDiff.diffPath, 'utf-8')
+            : undefined;
         } else {
           diffContent = undefined;
         }

@@ -37,6 +37,10 @@ export interface CoverageReport {
     totalLines: number;
     coveredLines: number;
     reportPath?: string;
+    // 这个模块自己的 git diff 原文快照，merge 时从 Build.moduleDiffs 落盘的文件读出来存进报告。
+    // 单仓库报告把全量 gitDiff 快照进 report.gitDiff，多仓库这里按模块快照，两边对称——
+    // 增量明细接口优先用这份内联快照，报告就自包含了，不再依赖 Build 文档和磁盘 diff 文件还在
+    gitDiff?: string;
   }[];
   createdAt: string;
 }
@@ -52,12 +56,19 @@ export interface Build {
   buildKey: string;
   branch: string;
   buildVersion?: string;
+  // 单仓库项目的全量 git diff。POST /api/builds 现在统一走 diffs.zip 文件上传（落盘 → 记
+  // gitDiffPath），不再收内联字符串；gitDiff 字段保留用于：① from-pgyer（JSON body，无文件
+  // 上传，仍直接传字符串）；② 兼容本次改动前已存在的旧 Build 记录。合并时优先读 gitDiffPath
+  // 落盘文件，没有再回退到这个内联字段
   gitDiff?: string;
+  // 单仓库 diff 的落盘路径（diffs.zip 里 manifest.json 形如 { "gitDiff": "diff.txt" } 时），
+  // 跟 moduleDiffs 一样"传文件落盘、数据库只记路径"，规避 multer 字段大小/MongoDB 文档大小限制
+  gitDiffPath?: string;
   // 组件化项目：壳工程仓库拉不到的文件，依次尝试各组件自己的仓库 + commit
   componentRepos?: { name: string; repositoryUrl: string; commitHash: string }[];
   // 多仓库组件化项目（目前只有 Android Gradle 多模块用）：按模块拆分的 git diff，存的是
-  // 落盘文件路径，不是 diff 原文——diff 原文走 POST /api/builds 的 diffs.zip 文件字段上传。
-  // 单仓库项目继续只用上面那个全量 gitDiff 字符串字段，不受影响
+  // 落盘文件路径，不是 diff 原文——diff 原文走 POST /api/builds 的 diffs.zip 文件字段上传，
+  // manifest.json 形如 { "entries": [{module, diffFile}] }
   moduleDiffs?: { module: string; diffPath: string }[];
   // 原始的 build-fingerprint.json，纯存档/排查用，不参与匹配逻辑（匹配走 buildKey）
   buildFingerprint?: string;

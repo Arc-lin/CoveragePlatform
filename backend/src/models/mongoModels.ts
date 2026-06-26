@@ -38,6 +38,9 @@ export interface ICoverageReport extends Document {
     // 这个模块自己的 JaCoCo XML 路径——查某个文件的行级覆盖率时，必须用这个文件所属
     // 模块自己的报告，不能直接用整份报告顶层的 reportPath（那只是第一个模块的报告）
     reportPath?: string;
+    // 这个模块自己的 git diff 原文快照（merge 时从 Build.moduleDiffs 落盘文件读入），
+    // 让多仓库报告像单仓库 report.gitDiff 一样自包含，增量明细不再依赖 Build + 磁盘文件
+    gitDiff?: string;
   }[];
   createdAt: Date;
 }
@@ -53,7 +56,10 @@ export interface IBuild extends Document {
   buildKey: string;
   branch: string;
   buildVersion?: string;
+  // 单仓库 diff：现在统一走 diffs.zip 落盘（gitDiffPath）；gitDiff 内联字段仅 from-pgyer 和
+  // 旧记录还在用，合并时优先 gitDiffPath、回退 gitDiff
   gitDiff?: string;
+  gitDiffPath?: string;
   // 组件化项目：壳工程仓库里拉不到的文件，按这份清单依次尝试各组件自己的仓库 + commit。
   // 每个组件各自的 commitHash（不是 buildKey 复合指纹），用于直接去对应仓库拉源码
   componentRepos?: { name: string; repositoryUrl: string; commitHash: string }[];
@@ -140,6 +146,7 @@ const CoverageReportSchema = new Schema<ICoverageReport>({
     totalLines: { type: Number, required: true },
     coveredLines: { type: Number, required: true },
     reportPath: { type: String },
+    gitDiff: { type: String },
     _id: false
   }],
   createdAt: { type: Date, default: Date.now }
@@ -181,6 +188,7 @@ const BuildSchema = new Schema<IBuild>({
   branch: { type: String, required: true },
   buildVersion: { type: String },
   gitDiff: { type: String },
+  gitDiffPath: { type: String },
   componentRepos: [{
     name: { type: String, required: true },
     repositoryUrl: { type: String, required: true },
